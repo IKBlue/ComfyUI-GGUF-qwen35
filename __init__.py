@@ -19,13 +19,21 @@ implementation that would have to be maintained in parallel.
 
 from .nodes import V3_NODES, comfy_entrypoint
 
-# Must be None (not a mapping) so the loader takes the comfy_entrypoint branch.
-NODE_CLASS_MAPPINGS = None
-NODE_DISPLAY_NAME_MAPPINGS = None
+# NOTE: do NOT define NODE_CLASS_MAPPINGS here -- not even as None.
+#
+# ComfyUI's loader (nodes.py) tests `getattr(module, "NODE_CLASS_MAPPINGS", None)
+# is not None` and only falls through to comfy_entrypoint when that is false, so
+# leaving the name undefined is what selects the V3 branch; setting it to None
+# works there too.
+#
+# But ComfyUI-HotReloadHack does
+#     getattr(module, "NODE_CLASS_MAPPINGS", {}).keys()
+# where the {} default only applies when the attribute is *absent*. An explicit
+# None raises `'NoneType' object has no attribute 'keys'`, aborting its reload
+# and leaving its class bookkeeping out of sync -- so the name must be omitted
+# rather than set to None.
 
 __all__ = [
     "comfy_entrypoint",
     "V3_NODES",
-    "NODE_CLASS_MAPPINGS",
-    "NODE_DISPLAY_NAME_MAPPINGS",
 ]
