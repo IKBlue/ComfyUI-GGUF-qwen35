@@ -1,14 +1,28 @@
 [project]
-name = "comfyui-gguf"
-description = "GGUF Quantization support for native ComfyUI models."
-version = "2.0.0" # 2.0.0 = GitHub main, 1.X.X = ComfyUI Registry
+name = "comfyui-gguf-qwen35"
+description = "GGUF quantization support for ComfyUI, with Qwen3.5 (qwen35) text-encoder and mmproj vision-tower support. Fork of city96/ComfyUI-GGUF."
+version = "2.1.0"
 license = { file = "LICENSE" }
+readme = "README.md"
+requires-python = ">=3.9"
 dependencies = ["gguf>=0.13.0", "sentencepiece", "protobuf"]
 
+# Upstream author, kept for attribution (Apache-2.0 requires the notice to
+# travel with the work). Fork maintainer listed separately below.
+authors = [
+    { name = "City96" },
+]
+maintainers = [
+    { name = "IKBlue" },
+]
+
 [project.urls]
-Repository = "https://github.com/city96/ComfyUI-GGUF"
+Repository = "https://github.com/IKBlue/ComfyUI-GGUF-qwen35"
+Upstream = "https://github.com/city96/ComfyUI-GGUF"
+Changelog = "https://github.com/IKBlue/ComfyUI-GGUF-qwen35/blob/main/CHANGELOG.md"
+"Bug Tracker" = "https://github.com/IKBlue/ComfyUI-GGUF-qwen35/issues"
 
 [tool.comfy]
-PublisherId = "city96"
-DisplayName = "ComfyUI-GGUF"
+PublisherId = "ikblue"
+DisplayName = "ComfyUI-GGUF-qwen35"
 Icon = ""

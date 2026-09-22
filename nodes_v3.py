@@ -3,9 +3,45 @@
 # (comfy_api.latest: io.Schema / io.ComfyNode / comfy_entrypoint).
 #
 # See https://docs.comfy.org/custom-nodes/v3_migration
-#
-# The V1 node classes are kept in nodes.py and remain exported below so that
-# ComfyUI builds that predate V3 support keep working unchanged.
+
+"""ComfyUI V3 (``comfy_api.latest``) definitions for the GGUF loader nodes.
+
+Six nodes, each an :class:`io.ComfyNode` with a ``define_schema`` classmethod and
+a classmethod ``execute`` returning :class:`io.NodeOutput`:
+
+===========================  ==========  ==========================================
+node_id                      output      notes
+===========================  ==========  ==========================================
+``UnetLoaderGGUF``           ``MODEL``   diffusion model from ``models/unet`` or
+                                         ``models/diffusion_models``
+``UnetLoaderGGUFAdvanced``   ``MODEL``   adds ``dequant_dtype``, ``patch_dtype``,
+                                         ``patch_on_device``
+``CLIPLoaderGGUF``           ``CLIP``    adds an optional ``vision_name`` mmproj
+``DualCLIPLoaderGGUF``       ``CLIP``    two text encoders
+``TripleCLIPLoaderGGUF``     ``CLIP``    three text encoders
+``QuadrupleCLIPLoaderGGUF``  ``CLIP``    four text encoders
+===========================  ==========  ==========================================
+
+Every ``node_id`` and ``display_name`` matches the corresponding V1 class in
+:mod:`nodes`, so existing workflows keep resolving after the migration.
+
+Import order and registration
+-----------------------------
+ComfyUI's custom-node loader checks ``NODE_CLASS_MAPPINGS`` **first** and returns
+immediately, so the ``comfy_entrypoint`` branch is only reached when that
+attribute is ``None`` or absent. :mod:`__init__` therefore sets
+``NODE_CLASS_MAPPINGS = None`` when this module imports cleanly, and only falls
+back to the V1 mappings when ``comfy_api.latest`` is unavailable. Exposing both
+would silently keep running V1.
+
+The V1 classes stay in :mod:`nodes` (which this module imports for its shared
+helpers and for the core type lists) because custom-node discovery only loads
+top-level entries of ``custom_nodes/`` -- ``nodes.py`` as a submodule is never
+registered on its own, so there is no double registration.
+
+Attribution: derived from the V1 node classes in upstream ComfyUI-GGUF by City96
+(https://github.com/city96/ComfyUI-GGUF), Apache-2.0.
+"""
 import torch
 import logging
 import inspect

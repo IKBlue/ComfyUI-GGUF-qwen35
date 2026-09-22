@@ -1,116 +1,179 @@
 # ComfyUI-GGUF-qwen35
 
-> **This is a fork of [city96/ComfyUI-GGUF](https://github.com/city96/ComfyUI-GGUF).**
-> It adds **Qwen3.5 (`qwen35`) text-encoder GGUF support**, which the upstream
-> project does not currently handle. All GGUF reading, dequantisation, GGML
-> custom ops and everything unrelated to qwen35 are **City96's original work**.
-> Licensed Apache-2.0, same as upstream. See [NOTICE](NOTICE) for the full
-> modification list.
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
-## What this fixes
+GGUF quantization support for ComfyUI, **with Qwen3.5 (`qwen35`) text-encoder
+support and an optional mmproj vision tower**, migrated to the **V3 node schema**.
 
-Loading a Qwen3.5 text encoder with `CLIPLoader (GGUF)` fails with:
+This is a fork of [city96/ComfyUI-GGUF](https://github.com/city96/ComfyUI-GGUF)
+by **IKBlue**. Upstream provides all GGUF loading, the GGML custom operations,
+the dequantisation kernels and every non-qwen35 model — that work is City96's and
+is reused here unchanged apart from the additions listed below. See
+[NOTICE](NOTICE) for the full attribution, and [CHANGELOG.md](CHANGELOG.md) for
+what this fork changed and when.
 
+---
+
+## Contents
+
+- [What this fork adds](#what-this-fork-adds)
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [Usage](#usage)
+  - [Load a diffusion model](#load-a-diffusion-model)
+  - [Load a text encoder](#load-a-text-encoder)
+  - [Qwen3.5 prompt enhancers and the vision tower](#qwen35-prompt-enhancers-and-the-vision-tower)
+- [The qwen35 conversion, step by step](#the-qwen35-conversion-step-by-step)
+- [Verification status](#verification-status)
+- [Known limitations](#known-limitations)
+- [Project layout](#project-layout)
+- [Development](#development)
+- [Credits and licence](#credits-and-licence)
+
+---
+
+## What this fork adds
+
+Three things, on top of upstream:
+
+1. **Qwen3.5 (`qwen35`) text-encoder support.** ComfyUI rejects these GGUFs with
+   `ValueError: Unexpected text model architecture type in GGUF file: 'qwen35'`
+   because the llama.cpp layout differs from ComfyUI's native qwen35 checkpoint.
+   `qwen35_support.py` performs the remap.
+2. **Optional mmproj vision tower.** Many qwen35 text-encoder GGUFs are exported
+   language-only; ComfyUI's `Qwen35` always builds a vision tower and calls it for
+   image inputs, so those files break on image-edit workflows. Supply the matching
+   `mmproj` GGUF and the fork merges it in.
+3. **V3 node schema.** All six nodes are available via `comfy_api.latest`
+   (`io.ComfyNode` / `io.Schema` / `comfy_entrypoint`), with a V1 fallback for
+   older ComfyUI builds.
+
+| File | Origin | Change |
+|---|---|---|
+| `qwen35_support.py` | **new** (IKBlue) | qwen35 text-encoder remap + mmproj vision-tower converter |
+| `nodes_v3.py` | **new** (IKBlue) | all six nodes in the V3 schema |
+| `__init__.py` | IKBlue | exports `comfy_entrypoint`, falls back to V1 |
+| `loader.py` | City96 | +qwen35 branch, +optional `vision_path` |
+| `nodes.py` | City96 | +optional `vision_name` (V1 classes kept) |
+| `README.md`, `NOTICE`, `CHANGELOG.md`, `pyproject.toml` | IKBlue | fork metadata |
+
+Everything else (`ops.py`, `dequant.py`, `tools/`) is upstream, unchanged.
+
+---
+
+## Requirements
+
+- A recent ComfyUI. The **V3 schema** needs `comfy_api.latest`; without it the
+  pack automatically falls back to the V1 nodes, so old builds keep working.
+- `gguf>=0.13.0` (plus optional `sentencepiece`, `protobuf` for tokenizer
+  recreation) — see `requirements.txt`.
+
+## Installation
+
+Clone into ComfyUI's custom nodes directory:
+
+```bash
+git clone https://github.com/IKBlue/ComfyUI-GGUF-qwen35 ComfyUI/custom_nodes/ComfyUI-GGUF
 ```
-ValueError: Unexpected text model architecture type in GGUF file: 'qwen35'
+
+For a standalone ComfyUI release, from the folder containing `run_nvidia_gpu.bat`:
+
+```bash
+git clone https://github.com/IKBlue/ComfyUI-GGUF-qwen35 ComfyUI/custom_nodes/ComfyUI-GGUF
+.\python_embeded\python.exe -s -m pip install -r .\ComfyUI\custom_nodes\ComfyUI-GGUF\requirements.txt
 ```
 
-`qwen35` is a hybrid architecture (24 linear-attention + 8 full-attention layers
-at 32 layers total), and its GGUF tensor layout does not match ComfyUI's native
-qwen35 checkpoint. This fork adds the missing conversion.
+The nodes appear under the **`IKBlue`** category (upstream uses `bootleg`, so the
+two packs can coexist without mixing).
 
-## Changes vs upstream
+---
 
-| File | Change |
+## Usage
+
+The node ids are identical to upstream, so existing workflows keep working after
+swapping the folder.
+
+### Load a diffusion model
+
+| Node | Output | Notes |
+|---|---|---|
+| `Unet Loader (GGUF)` | `MODEL` | pick a `.gguf` from `models/diffusion_models` or `models/unet` |
+| `Unet Loader (GGUF/Advanced)` | `MODEL` | adds `dequant_dtype`, `patch_dtype`, `patch_on_device` |
+
+Replace the stock *Load Diffusion Model* node with the GGUF loader. For full
+precision output keep `dequant_dtype`/`patch_dtype` at `default`.
+
+### Load a text encoder
+
+| Node | Output |
 |---|---|
-| `qwen35_support.py` | **new** — remaps the llama.cpp qwen35 layout onto ComfyUI's qwen35 checkpoint layout, plus an mmproj vision-tower converter |
-| `nodes_v3.py` | **new** — all six nodes migrated to the [V3 node schema](https://docs.comfy.org/custom-nodes/v3_migration) (`io.ComfyNode` / `io.Schema` / `comfy_entrypoint`) |
-| `__init__.py` | exports the V3 entry point, falling back to V1 when `comfy_api.latest` is unavailable |
-| `loader.py` | ~18 lines — `"qwen35"` added to `TXT_ARCH_LIST`, a qwen35 branch in `gguf_clip_loader()`, and an optional `vision_path` argument |
-| `nodes.py` | ~25 lines — optional `vision_name` input on `CLIPLoader (GGUF)` (V1 classes kept for old builds) |
+| `CLIPLoader (GGUF)` | `CLIP` |
+| `DualCLIPLoader (GGUF)` | `CLIP` |
+| `TripleCLIPLoader (GGUF)` | `CLIP` |
+| `QuadrupleCLIPLoader (GGUF)` | `CLIP` |
 
-The node **category** is `IKBlue` (upstream uses `bootleg`), so this fork's nodes
-are grouped under the author's own menu heading instead of being mixed into the
-upstream category.
+`type` accepts the same values as the built-in `CLIPLoader`
+(`stable_diffusion`, `sd3`, `flux`, `qwen_image`, …). Picking the wrong one is the
+most common cause of a shape mismatch at load time.
 
-## V3 schema migration
+### Qwen3.5 prompt enhancers and the vision tower
 
-All six nodes (`UnetLoaderGGUF`, `UnetLoaderGGUFAdvanced`, `CLIPLoaderGGUF`,
-`DualCLIPLoaderGGUF`, `TripleCLIPLoaderGGUF`, `QuadrupleCLIPLoaderGGUF`) are
-available in V3 form from `nodes_v3.py`:
-
-```python
-class CLIPLoaderGGUF(io.ComfyNode):
-    @classmethod
-    def define_schema(cls) -> io.Schema: ...
-    @classmethod
-    def execute(cls, ...) -> io.NodeOutput: ...
-
-async def comfy_entrypoint() -> ComfyExtension:
-    return GGUFCustomNodesExtension()
-```
-
-`node_id`s and display names are **identical to the V1 ids**, so existing
-workflows keep resolving; the migrated `UnetLoaderGGUFAdvanced` also gains a
-correctly typed `dequant_dtype` / `patch_dtype` / `patch_on_device` schema
-(V1 read those as undeclared keyword arguments).
-
-> [!IMPORTANT]
-> ComfyUI's loader checks `NODE_CLASS_MAPPINGS` **first** and returns
-> immediately, so a V3 `comfy_entrypoint` is only reached when that attribute is
-> `None` or absent (`nodes.py`, "V1 node definition" / "V3 Extension
-> Definition" branches). This pack therefore sets `NODE_CLASS_MAPPINGS = None`
-> when `comfy_api.latest` imports, and only exposes the V1 mappings when it does
-> not. Exposing both would silently keep using V1.
-
-The conversion performs five things:
-
-1. **RMSNorm centring** — qwen35 GGUF stores norm weights un-centred, ComfyUI's
-   `RMSNorm` uses `add=1`, so `1.0` is subtracted.
-2. **`ssm_a` → `A_log`** — the GGUF holds `A` (negative), ComfyUI stores
-   `A_log`, so `A_log = log(-A)`.
-3. **Value-head channel order** — the per-head SSM tensors (`A_log`, `dt_bias`,
-   `in_proj_a`, `in_proj_b`) are grouped *evens then odds* over the 32 value
-   heads. One single permutation is correct for every layer.
-4. **`conv1d` channel groups** — 8192 channels stored as 64 groups of 128,
-   reordered `0..32, 34,36,..,62, 33,35,..,63`.
-5. **Key renaming** — llama.cpp names (`blk.N.attn_qkv.weight`, …) to ComfyUI
-   qwen35 module names (`model.language_model.layers.N.linear_attn.*`, …).
-
-Tensors are dequantised before being returned. This matters: a `GGMLTensor`
-reports the dequantised shape while keeping quantised storage, so
-`load_state_dict` would otherwise read the wrong inner dimension.
-
-## Vision tower (image inputs)
-
-Many qwen35 text-encoder GGUFs — including the Qwen-Image-2.1 **PE-T2I**
-prompt enhancers — are exported **language-only**. They contain no
-`model.visual.*` tensors at all, while ComfyUI's `Qwen35` unconditionally builds
-a vision tower and calls it whenever the input contains an image
-(`comfy/text_encoders/qwen35.py:727` and `:734`). Such a file therefore loads
-fine but fails on any image-edit workflow with:
+If the text-encoder GGUF was exported **without** a vision tower, loading
+succeeds but any image input fails with:
 
 ```
 RuntimeError: mat1 and mat2 shapes cannot be multiplied (3520x1152 and 3456x1152)
 ```
 
-(1152 is the *vision* tower width — the language tower of the 9B model is 4096.)
+`1152` is the vision tower width — the 9B language tower is 4096 — so that error
+means the vision path was reached with no vision weights present.
 
-The missing weights are available as the matching **mmproj** GGUF from
-llama.cpp (`type = mmproj`, `clip.has_vision_encoder = true`), for example
-[`lmstudio-community/Qwen3.5-9B-GGUF/mmproj-Qwen3.5-9B-BF16.gguf`](https://huggingface.co/lmstudio-community/Qwen3.5-9B-GGUF).
-
-Place it where ComfyUI scans for CLIP models and pick it in the node's new
-**`vision_name`** widget:
+Fix: download the matching **mmproj** GGUF (`type = mmproj`,
+`clip.has_vision_encoder = true`) and select it in `vision_name`:
 
 ```
 CLIPLoader (GGUF)
   clip_name   : Qwen-Image-2.1-PE-T2I.Q5_K_S.gguf
   type        : qwen_image
-  vision_name : mmproj-Qwen3.5-9B-BF16.gguf      <- new, optional
+  vision_name : mmproj-Qwen3.5-9B-BF16.gguf      <- optional, new
 ```
 
-`vision_from_mmproj()` maps `v.*` / `mm.*` onto `model.visual.*`:
+`vision_name` defaults to `none` and listing it is optional, so text-only
+workflows are unaffected. Any `.gguf` whose filename contains `mmproj` or
+`vision` shows up in the list — put the file in `models/text_encoders` or
+`models/clip` so ComfyUI scans it.
+
+---
+
+## The qwen35 conversion, step by step
+
+Derived and verified tensor-by-tensor against the official reference weights
+[`Qwen/Qwen-Image-2.1-PE-T2I`](https://huggingface.co/Qwen/Qwen-Image-2.1-PE-T2I)
+(architecture `qwen3_5`, `qwen35_9b`: 32 layers, hidden 4096, intermediate
+12288, 16 attention heads / 4 KV heads, head_dim 256, 24 linear-attention +
+8 full-attention layers at interval 4).
+
+`convert_qwen35()` performs five transformations:
+
+1. **RMSNorm centring.** qwen35 GGUF stores norm weights un-centred, while
+   ComfyUI's `RMSNorm` uses `add=1` — so `1.0` is subtracted. Applies to
+   `input_layernorm`, `post_attention_layernorm`, `q_norm`, `k_norm` and the final
+   `norm`.
+2. **`ssm_a` → `A_log`.** The GGUF holds `A` (negative); ComfyUI stores `A_log`,
+   so `A_log = log(-A)`.
+3. **Value-head channel order.** The per-head SSM tensors — `A_log`, `dt_bias`,
+   `in_proj_a`, `in_proj_b` — are grouped *evens then odds* over the 32 value
+   heads. A single permutation is correct for every layer.
+4. **`conv1d` channel groups.** 8192 channels stored as 64 groups of 128,
+   reordered `0..32, 34,36,..,62, 33,35,..,63`.
+5. **Key renaming.** llama.cpp names → ComfyUI qwen35 module names, e.g.
+   `blk.N.attn_qkv.weight` → `model.language_model.layers.N.linear_attn.in_proj_qkv.weight`.
+
+Every tensor is dequantised before being returned. This matters: a `GGMLTensor`
+reports the dequantised shape while keeping quantised storage, so
+`load_state_dict` would otherwise read the wrong inner dimension.
+
+`vision_from_mmproj()` maps the mmproj onto ComfyUI's `model.visual.*`:
 
 | mmproj | ComfyUI |
 |---|---|
@@ -122,92 +185,104 @@ CLIPLoader (GGUF)
 | `v.position_embd` | `pos_embed` |
 | `v.post_ln`, `mm.0`, `mm.2` | `merger.norm`, `merger.linear_fc1`, `merger.linear_fc2` |
 
-Layout gotcha: in a ggml file `tensor.shape` is the *logical* shape while
-`tensor.data` has its axes **reversed**, stored in that tensor's own dtype
-(BF16 appears as `uint8` with the last dimension doubled). Linear weights in the
-mmproj are therefore `(in, out)` and need a transpose — unlike the language
-tower, which already stores them as `(out, in)`.
+Two ggml layout traps are handled explicitly:
 
-A language GGUF plus a vision mmproj yield the **same tensor count as the
-official checkpoint**: 427 + 333 = **760**, with zero key overlap.
-
-## Verification
-
-The mapping was derived and checked tensor-by-tensor against the **official
-reference weights**, [`Qwen/Qwen-Image-2.1-PE-T2I`](https://huggingface.co/Qwen/Qwen-Image-2.1-PE-T2I)
-(architecture `qwen3_5`, `qwen35_9b`: 32 layers, hidden 4096, intermediate
-12288, 16 attention heads / 4 KV heads, head_dim 256):
-
-* layer-type layout (24 linear-attention / 8 full-attention, `full_attention_interval=4`)
-  matches `comfy.text_encoders.qwen35._qwen35_layer_types()` exactly;
-* every converted tensor key exists in the reference key set (0 unexpected keys);
-* all shapes match;
-* the norm offset, the `A_log` transform and the channel permutations reproduce
-  the reference **exactly (0 error)** on the un-quantised (`F32`) tensors of all
-  24 linear-attention layers;
-* the converted state dict loads through
-  `comfy.sd.load_text_encoder_state_dicts()` as `Qwen35TEModel_`.
-
-**Scope note:** this was verified against the Qwen-Image-2.1 PE-T2I (9B) weights
-only. Other qwen35 sizes (2B / 4B / 27B) may need separate validation — the
-`HEAD_PERM` / `CONV_GROUP_ORDER` tables assume 32 value heads.
-
-## Install
-
-Drop-in replacement for the upstream node pack:
-
-```
-git clone https://github.com/IKBlue/ComfyUI-GGUF-qwen35 ComfyUI/custom_nodes/ComfyUI-GGUF
-```
-
-or copy `qwen35_support.py` and the `loader.py` change into an existing
-`ComfyUI-GGUF` checkout.
-
-## Credit
-
-* Upstream project: **[city96/ComfyUI-GGUF](https://github.com/city96/ComfyUI-GGUF)** — City96, Apache-2.0
-* qwen35 support: **IKBlue**, Apache-2.0
-* Reference weights: **[Qwen/Qwen-Image-2.1-PE-T2I](https://huggingface.co/Qwen/Qwen-Image-2.1-PE-T2I)** — Qwen team
+- `tensor.shape` is the *logical* shape while `tensor.data` has its axes
+  **reversed**, stored in that tensor's own dtype (BF16 appears as `uint8` with
+  the last dimension doubled).
+- Consequently mmproj linear weights are `(in, out)` and need a transpose —
+  unlike the language tower, which already stores them as `(out, in)`.
 
 ---
 
-*The original upstream README follows, unchanged.*
+## Verification status
+
+| Check | Result |
+|---|---|
+| Layer-type layout vs `comfy.text_encoders.qwen35._qwen35_layer_types()` | identical |
+| Converted tensor keys present in the reference key set | all, 0 unexpected |
+| Tensor shapes vs the official checkpoint | all match |
+| Norm offset, `A_log` transform, channel permutations (un-quantised F32 tensors) | exact, 0 error, all 24 linear-attention layers |
+| Language GGUF + mmproj tensor count | 427 + 333 = **760**, = the official checkpoint, 0 key overlap |
+| `Qwen35VisionModel.load_state_dict` | 0 missing / 0 unexpected / 0 shape mismatch |
+| Synthetic vision forward pass | OK, returns the 4096-d language width |
+| `comfy.sd.load_text_encoder_state_dicts` | `Qwen35TEModel_` |
+| Real `CLIPLoaderGGUF.execute(..., vision_name=...)` (V3, no stubs) | `NodeOutput` → `Qwen35TEModel_` |
+| V3 migration: entrypoint, all six schemas, id/display-name parity with V1 | pass |
+
+## Known limitations
+
+- **Not yet numerically compared against the reference model.** The mapping is
+  verified structurally and exactly on the un-quantised tensors, but a
+  token-by-token comparison of the GGUF text path against the int8 reference has
+  not been run (it needs both models resident). If prompt-enhancement output
+  looks wrong, the first suspect is item below.
+- **The fused `attn_qkv` of the 8 full-attention layers is not split.** The GGUF
+  packs q/k/v/gate into one 8192×4096 tensor while ComfyUI wants separate
+  `q_proj` / `k_proj` / `v_proj`. It is currently mapped through as-is. The
+  reference is int8-quantised there, so the packing order could not be derived
+  with zero error; guessing would degrade output silently, so it was left alone.
+  This does not affect the vision tower.
+- **Verified against the 9B PE-T2I weights only.** `HEAD_PERM` and
+  `CONV_GROUP_ORDER` assume 32 value heads, so 2B/4B (16 value heads) and 27B may
+  need their own validation.
+- **Language-only GGUFs need an mmproj** for any image input, as described above.
 
 ---
 
-# ComfyUI-GGUF
-GGUF Quantization support for native ComfyUI models
-
-This is currently very much WIP. These custom nodes provide support for model files stored in the GGUF format popularized by [llama.cpp](https://github.com/ggerganov/llama.cpp).
-
-While quantization wasn't feasible for regular UNET models (conv2d), transformer/DiT models such as flux seem less affected by quantization. This allows running it in much lower bits per weight variable bitrate quants on low-end GPUs. For further VRAM savings, a node to load a quantized version of the T5 text encoder is also included.
-
-![Comfy_Flux1_dev_Q4_0_GGUF_1024](https://github.com/user-attachments/assets/70d16d97-c522-4ef4-9435-633f128644c8)
-
-Note: The "Force/Set CLIP Device" is **NOT** part of this node pack. Do not install it if you only have one GPU. Do not set it to cuda:0 then complain about OOM errors if you do not undestand what it is for. There is not need to copy the workflow above, just use your own workflow and replace the stock "Load Diffusion Model" with the "Unet Loader (GGUF)" node.
-
-## Installation
-
-> [!IMPORTANT]  
-> Make sure your ComfyUI is on a recent-enough version to support custom ops when loading the UNET-only.
-
-To install the custom node normally, git clone this repository into your custom nodes folder (`ComfyUI/custom_nodes`) and install the only dependency for inference (`pip install --upgrade gguf`)
+## Project layout
 
 ```
-git clone https://github.com/city96/ComfyUI-GGUF
+ComfyUI-GGUF-qwen35/
+├── __init__.py            # V3 entry point (+ V1 fallback)
+├── nodes_v3.py            # V3 schema nodes  (IKBlue)
+├── nodes.py               # V1 schema nodes  (upstream + vision_name)
+├── qwen35_support.py      # qwen35 + mmproj conversion  (IKBlue, new)
+├── loader.py              # GGUF readers and key maps   (upstream + qwen35)
+├── ops.py                 # GGML custom operations      (upstream)
+├── dequant.py             # dequantisation kernels      (upstream)
+├── tools/                 # conversion / quantisation helpers (upstream)
+├── NOTICE                 # attribution
+├── CHANGELOG.md           # fork changes
+├── LICENSE                # Apache-2.0 (upstream, unchanged)
+└── pyproject.toml         # package + ComfyUI registry metadata
 ```
 
-To install the custom node on a standalone ComfyUI release, open a CMD inside the "ComfyUI_windows_portable" folder (where your `run_nvidia_gpu.bat` file is) and use the following commands:
+Files must stay in this flat layout: `loader.py` consumes `qwen35_support.py` via
+a relative import and `ops.py` imports `comfy.ops`, so moving them breaks the
+pack.
 
+## Development
+
+Everything runs on CPU and needs no GPU to check:
+
+```bash
+python -c "import ast,glob; [ast.parse(open(p,encoding='utf-8').read(),p) for p in glob.glob('*.py')]"
+
+# expand the V3 entrypoint and validate every schema
+python - <<'PY'
+import asyncio
+from nodes_v3 import comfy_entrypoint
+ext = asyncio.run(comfy_entrypoint())
+for cls in asyncio.run(ext.get_node_list()):
+    s = cls.GET_SCHEMA(); s.validate()
+    print(s.node_id, s.category, [i.id for i in s.inputs])
+PY
 ```
-git clone https://github.com/city96/ComfyUI-GGUF ComfyUI/custom_nodes/ComfyUI-GGUF
-.\python_embeded\python.exe -s -m pip install -r .\ComfyUI\custom_nodes\ComfyUI-GGUF\requirements.txt
-```
 
-On MacOS sequoia, torch 2.4.1 seems to be required, as 2.6.X nightly versions cause a "M1 buffer is not large enough" error. See [this issue](https://github.com/city96/ComfyUI-GGUF/issues/107) for more information/workarounds.
+Conversion helpers (model → GGUF, quantization with a patched llama.cpp) live in
+[`tools/README.md`](tools/README.md) and are upstream's.
 
-## Models
+## Credits and licence
 
-GGUF quantizations of many models can be found on [Comfy-Org's HuggingFace](https://huggingface.co/Comfy-Org) and [city96's HuggingFace](https://huggingface.co/city96). For a full list of supported models, check the [README in the tools folder](tools/README.md).
+- **Upstream project:** [city96/ComfyUI-GGUF](https://github.com/city96/ComfyUI-GGUF)
+  — City96, Apache-2.0. All GGUF reading, GGML ops, dequantisation and non-qwen35
+  model support.
+- **qwen35 support, mmproj vision tower, V3 migration, docs:** IKBlue, Apache-2.0.
+- **Reference weights:** [Qwen/Qwen-Image-2.1-PE-T2I](https://huggingface.co/Qwen/Qwen-Image-2.1-PE-T2I)
+  — Qwen team.
+- **mmproj vision tower:** [lmstudio-community/Qwen3.5-9B-GGUF](https://huggingface.co/lmstudio-community/Qwen3.5-9B-GGUF).
+- **V3 schema reference:** [ComfyUI V3 migration guide](https://docs.comfy.org/custom-nodes/v3_migration).
 
-Note that quantized models are not currently supported when using a `Stable-Diffusion` checkpoint with an embedded VAE. Use a standalone VAE instead. You can find the original full precision models on the [Comfy-Org HuggingFace](https://huggingface.co/Comfy-Org) repository.
+Licensed under the Apache License 2.0 — see [LICENSE](LICENSE). Modified files
+carry a notice stating that they were changed, as required by Apache-2.0 §4(b).
