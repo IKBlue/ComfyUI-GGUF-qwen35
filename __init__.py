@@ -7,9 +7,9 @@
 
 ComfyUI's custom-node loader checks ``NODE_CLASS_MAPPINGS`` **first** and returns
 immediately; the ``comfy_entrypoint`` branch is an ``elif`` and is therefore only
-reached when that attribute is ``None`` or absent. Since this pack is V3-only,
-``NODE_CLASS_MAPPINGS`` is set to ``None`` here rather than to a mapping -- having
-both would silently keep running the V1 classes.
+reached when that attribute is ``None`` or absent. This pack is V3-only, so the
+name is left **undefined** here -- see the note below for why it must not be set
+to ``None`` either.
 
 Requires a ComfyUI build providing ``comfy_api.latest``. There is deliberately no
 V1 fallback: on an older build the import below fails and ComfyUI reports the
