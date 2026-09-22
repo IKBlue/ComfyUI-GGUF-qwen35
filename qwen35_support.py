@@ -96,19 +96,18 @@ LINEAR_SUFFIX = {
     "ssm_conv1d.weight": "linear_attn.conv1d.weight",
 }
 
-#: Keys found only on full-attention layers (every 4th layer).
+#: Keys found only on full-attention layers (every 4th layer: 3, 7, .., 31).
 #:
-#: Scope note: the qwen35 GGUF carries a fused ``attn_qkv.weight`` on **all** 32
-#: layers, and ``LINEAR_SUFFIX`` maps it to ``linear_attn.in_proj_qkv.weight``.
-#: For the 24 linear-attention layers that is correct. For the 8 full-attention
-#: layers it is *not* split into ``q_proj`` / ``k_proj`` / ``v_proj`` -- those
-#: layers additionally carry separate ``attn_q``/``attn_k``/``attn_v`` weights,
-#: which are mapped below, and the fused tensor is passed through unchanged and
-#: therefore ignored by ComfyUI's module tree. Splitting it properly was left
-#: undone on purpose: the only available reference for those layers is
-#: int8-quantised, so the packing order of q/k/v/gate could not be established
-#: with zero error, and a guess would corrupt output silently. See the
-#: "Known limitations" section of the README.
+#: The two attention kinds use different tensor names in this GGUF, and the
+#: split is clean -- verified by dumping the per-layer key sets:
+#:
+#: * the 24 linear-attention layers carry ``attn_qkv.weight`` (the DeltaNet
+#:   input projection) and ``attn_gate.weight``; ``LINEAR_SUFFIX`` maps them.
+#: * the 8 full-attention layers carry separate ``attn_q`` / ``attn_k`` /
+#:   ``attn_v`` / ``attn_output`` and no ``attn_qkv`` at all, mapped below.
+#:
+#: No fused tensor is split anywhere: shapes already match ComfyUI's modules
+#: 1:1 (q 8192x4096, k/v 1024x4096, o 4096x4096 for the 9B).
 FULL_SUFFIX = {
     "attn_q.weight": "self_attn.q_proj.weight",
     "attn_k.weight": "self_attn.k_proj.weight",
