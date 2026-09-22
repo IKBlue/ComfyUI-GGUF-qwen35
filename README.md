@@ -51,13 +51,14 @@ Three things, on top of upstream:
 | File | Origin | Change |
 |---|---|---|
 | `qwen35_support.py` | **new** (IKBlue) | qwen35 text-encoder remap + mmproj vision-tower converter |
-| `nodes_v3.py` | **new** (IKBlue) | all six nodes in the V3 schema, plus the shared loading helpers |
+| `nodes.py` | **new** (IKBlue) | all six nodes in the V3 schema, plus the shared loading helpers |
 | `gguf_patcher.py` | City96 code, **extracted** (IKBlue) | `GGUFModelPatcher` + `*_gguf` folder registration, moved out of the node module and kept separate |
 | `__init__.py` | IKBlue | exports `comfy_entrypoint`; `NODE_CLASS_MAPPINGS = None` |
 | `loader.py` | City96 | +qwen35 branch, +optional `vision_path` |
 | `README.md`, `NOTICE`, `CHANGELOG.md`, `pyproject.toml` | IKBlue | fork metadata |
 
-`nodes.py` (the upstream V1 node classes) is **removed** — see the note below.
+Upstream's `nodes.py` (its V1 node classes) is **not** carried over — this pack
+replaces it with its own V3-only `nodes.py`. See the note below.
 Everything else (`ops.py`, `dequant.py`, `tools/`) is upstream, unchanged.
 
 ---
@@ -151,7 +152,7 @@ workflows are unaffected. Any `.gguf` whose filename contains `mmproj` or
 
 ## V3 schema
 
-All six nodes are defined in `nodes_v3.py` as `io.ComfyNode` subclasses:
+All six nodes are defined in `nodes.py` as `io.ComfyNode` subclasses:
 
 ```python
 class CLIPLoaderGGUF(io.ComfyNode):
@@ -273,7 +274,7 @@ Two ggml layout traps are handled explicitly:
 ```
 ComfyUI-GGUF-qwen35/
 ├── __init__.py            # exports comfy_entrypoint (V3 only)
-├── nodes_v3.py            # the six V3 nodes + shared loading helpers
+├── nodes.py               # the six V3 nodes + shared loading helpers
 ├── gguf_patcher.py        # GGUFModelPatcher + *_gguf folder registration
 ├── qwen35_support.py      # qwen35 + mmproj conversion (IKBlue, new)
 ├── loader.py              # GGUF readers and key maps  (upstream + qwen35)
@@ -294,7 +295,7 @@ pack.
 
 All six nodes need the same loading code, and the three multi-encoder CLIP
 loaders need it with different path counts. Keeping it as plain module-level
-functions in `nodes_v3.py` means each `execute` is a thin wrapper:
+functions in `nodes.py` means each `execute` is a thin wrapper:
 
 | Helper | Purpose |
 |---|---|
@@ -317,7 +318,7 @@ python -c "import ast,glob; [ast.parse(open(p,encoding='utf-8').read(),p) for p 
 # expand the V3 entrypoint and validate every schema
 python - <<'PY'
 import asyncio
-from nodes_v3 import comfy_entrypoint
+from nodes import comfy_entrypoint
 ext = asyncio.run(comfy_entrypoint())
 for cls in asyncio.run(ext.get_node_list()):
     s = cls.GET_SCHEMA(); s.validate()

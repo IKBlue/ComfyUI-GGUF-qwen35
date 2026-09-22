@@ -17,7 +17,7 @@ pack as unloadable, rather than quietly registering nodes from a second, V1
 implementation that would have to be maintained in parallel.
 """
 
-from .nodes_v3 import V3_NODES, comfy_entrypoint
+from .nodes import V3_NODES, comfy_entrypoint
 
 # Must be None (not a mapping) so the loader takes the comfy_entrypoint branch.
 NODE_CLASS_MAPPINGS = None

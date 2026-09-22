@@ -6,10 +6,8 @@
 
 """Shared GGUF plumbing used by both the V1 and V3 node modules.
 
-The V1 classes in :mod:`nodes` and the V3 classes in :mod:`nodes_v3` need the
-same two pieces of infrastructure. They cannot share them through inheritance
-because V1 nodes are instantiated while V3 nodes are pure classmethod
-containers, so this module holds them as plain, unbound definitions.
+The node definitions in :mod:`nodes` need two pieces of infrastructure that have
+nothing to do with the schema itself, so they live here instead.
 
 :class:`GGUFModelPatcher`
     A ``ModelPatcher`` that understands GGML-quantised weights: it keeps

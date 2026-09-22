@@ -50,11 +50,23 @@ changed. The complete list of modifications follows.
           ComfyUI's model.visual.* layout, for text encoder GGUFs that were
           exported language-only.
 
-  nodes_v3.py  (NEW FILE, Copyright 2026 IKBlue)
-      All six nodes re-expressed against the ComfyUI V3 schema
-      (comfy_api.latest: io.ComfyNode / io.Schema / comfy_entrypoint), plus the
-      GGUFCustomNodesExtension and comfy_entrypoint(). Derived from the
-      corresponding V1 classes in upstream nodes.py.
+  nodes.py  (REPLACES upstream's nodes.py; Copyright 2026 IKBlue)
+      Upstream's nodes.py held the V1 node classes plus GGUFModelPatcher and the
+      folder registration. This fork is V3-only, so that file was dropped and
+      this one takes its place:
+
+        - All six nodes re-expressed against the ComfyUI V3 schema
+          (comfy_api.latest: io.ComfyNode / io.Schema / comfy_entrypoint), plus
+          GGUFCustomNodesExtension and comfy_entrypoint(). Derived from the
+          corresponding V1 classes in upstream nodes.py.
+        - The shared loading logic those V1 classes carried: the CLIP state-dict
+          reader, the text-encoder builder, the file-list and CLIPType helpers,
+          as module-level functions.
+
+      The upstream V1 node classes themselves are NOT reproduced anywhere in
+      this fork. Upstream remains the reference for the V1 schema
+      (https://github.com/city96/ComfyUI-GGUF). GGUFModelPatcher and the folder
+      registration went to gguf_patcher.py.
 
   gguf_patcher.py  (NEW FILE, upstream City96 code relocated by IKBlue)
       GGUFModelPatcher and update_folder_names_and_paths, moved verbatim out of
@@ -68,15 +80,6 @@ changed. The complete list of modifications follows.
       + an optional vision_path argument that merges the mmproj vision tower
       + a mismatch guard rejecting a vision file that shares keys with the
         text encoder
-
-  nodes.py  (REMOVED, upstream City96)
-      The upstream V1 node classes were deleted when this fork became V3-only.
-      The shared loading logic they used to carry (the CLIP state-dict reader,
-      the text-encoder builder, the file-list and CLIPType helpers) was carried
-      over into nodes_v3.py as module-level functions; GGUFModelPatcher and the
-      folder registration went to gguf_patcher.py. The V1 classes themselves are
-      not reproduced anywhere. Upstream remains the reference for V1 (and is
-      available from https://github.com/city96/ComfyUI-GGUF).
 
   __init__.py  (MODIFIED)
       Exports comfy_entrypoint when comfy_api.latest is importable, setting
