@@ -21,13 +21,43 @@ qwen35 checkpoint. This fork adds the missing conversion.
 
 ## Changes vs upstream
 
-Three files differ:
-
 | File | Change |
 |---|---|
 | `qwen35_support.py` | **new** — remaps the llama.cpp qwen35 layout onto ComfyUI's qwen35 checkpoint layout, plus an mmproj vision-tower converter |
+| `nodes_v3.py` | **new** — all six nodes migrated to the [V3 node schema](https://docs.comfy.org/custom-nodes/v3_migration) (`io.ComfyNode` / `io.Schema` / `comfy_entrypoint`) |
+| `__init__.py` | exports the V3 entry point, falling back to V1 when `comfy_api.latest` is unavailable |
 | `loader.py` | ~18 lines — `"qwen35"` added to `TXT_ARCH_LIST`, a qwen35 branch in `gguf_clip_loader()`, and an optional `vision_path` argument |
-| `nodes.py` | ~25 lines — optional `vision_name` input on `CLIPLoader (GGUF)` |
+| `nodes.py` | ~25 lines — optional `vision_name` input on `CLIPLoader (GGUF)` (V1 classes kept for old builds) |
+
+## V3 schema migration
+
+All six nodes (`UnetLoaderGGUF`, `UnetLoaderGGUFAdvanced`, `CLIPLoaderGGUF`,
+`DualCLIPLoaderGGUF`, `TripleCLIPLoaderGGUF`, `QuadrupleCLIPLoaderGGUF`) are
+available in V3 form from `nodes_v3.py`:
+
+```python
+class CLIPLoaderGGUF(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema: ...
+    @classmethod
+    def execute(cls, ...) -> io.NodeOutput: ...
+
+async def comfy_entrypoint() -> ComfyExtension:
+    return GGUFCustomNodesExtension()
+```
+
+`node_id`s and display names are **identical to the V1 ids**, so existing
+workflows keep resolving; the migrated `UnetLoaderGGUFAdvanced` also gains a
+correctly typed `dequant_dtype` / `patch_dtype` / `patch_on_device` schema
+(V1 read those as undeclared keyword arguments).
+
+> [!IMPORTANT]
+> ComfyUI's loader checks `NODE_CLASS_MAPPINGS` **first** and returns
+> immediately, so a V3 `comfy_entrypoint` is only reached when that attribute is
+> `None` or absent (`nodes.py`, "V1 node definition" / "V3 Extension
+> Definition" branches). This pack therefore sets `NODE_CLASS_MAPPINGS = None`
+> when `comfy_api.latest` imports, and only exposes the V1 mappings when it does
+> not. Exposing both would silently keep using V1.
 
 The conversion performs five things:
 
