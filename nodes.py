@@ -1,136 +1,113 @@
 # (c) City96 || Apache-2.0 (apache.org/licenses/LICENSE-2.0)
+# Modified 2026 by IKBlue:
+#   * GGUFModelPatcher and the *_gguf folder registration moved to
+#     gguf_patcher.py so nodes.py and nodes_v3.py share one definition
+#   * the CLIP state-dict loader and text-encoder builder are now free
+#     functions (module level) so the V1 and V3 node classes can both call
+#     them -- a method cannot be shared, because V1 binds `self` and V3
+#     binds `cls`
+#   * optional "vision_name" input on CLIPLoaderGGUF (mmproj vision tower)
+#   * node category changed from "bootleg" to "IKBlue"
+#
+# The V1 node classes below remain the ones ComfyUI registers when
+# comfy_api.latest is unavailable; otherwise nodes_v3.py is used.
+
+"""V1 (legacy schema) node classes for the GGUF loaders.
+
+Kept alongside :mod:`nodes_v3` so ComfyUI builds that predate the V3 schema
+keep working. The shared loading logic lives in free functions:
+
+``_filename_list()``
+    Every ``.gguf``/safetensors text encoder ComfyUI can see.
+``_vision_filename_list()``
+    The subset that looks like an mmproj / vision tower.
+``_load_clip_state_dicts(paths, vision_path)``
+    Read each path into a state dict; merges the mmproj vision tower when a
+    single GGUF is loaded.
+``_load_text_encoder(clip_paths, clip_type, clip_data)``
+    Build the ``CLIP`` object with the GGML custom ops and wrap its patcher.
+
+See :mod:`gguf_patcher` for the model patcher and the folder registration.
+"""
 import torch
 import logging
 import inspect
-import collections
 
 import nodes
 import comfy.sd
-import comfy.lora
-import comfy.float
 import comfy.utils
-import comfy.model_patcher
 import comfy.model_management
 import folder_paths
 
-from .ops import GGMLOps, move_patch_to_device
+from .ops import GGMLOps
 from .loader import gguf_sd_loader, gguf_clip_loader
-from .dequant import is_quantized, is_torch_compatible
-
-def update_folder_names_and_paths(key, targets=[]):
-    # check for existing key
-    base = folder_paths.folder_names_and_paths.get(key, ([], {}))
-    base = base[0] if isinstance(base[0], (list, set, tuple)) else []
-    # find base key & add w/ fallback, sanity check + warning
-    target = next((x for x in targets if x in folder_paths.folder_names_and_paths), targets[0])
-    orig, _ = folder_paths.folder_names_and_paths.get(target, ([], {}))
-    folder_paths.folder_names_and_paths[key] = (orig or base, {".gguf"})
-    if base and base != orig:
-        logging.warning(f"Unknown file list already present on key {key}: {base}")
+from .gguf_patcher import GGUFModelPatcher, update_folder_names_and_paths
 
 # Add a custom keys for files ending in .gguf
 update_folder_names_and_paths("unet_gguf", ["diffusion_models", "unet"])
 update_folder_names_and_paths("clip_gguf", ["text_encoders", "clip"])
 
-class GGUFModelPatcher(comfy.model_patcher.ModelPatcher):
-    patch_on_device = False
 
-    def patch_weight_to_device(self, key, device_to=None, inplace_update=False):
-        if key not in self.patches:
-            return
-        weight = comfy.utils.get_attr(self.model, key)
+# ---------------------------------------------------------------------------
+# shared loading helpers (free functions: usable from V1 methods and V3
+# classmethods alike, since neither `self` nor `cls` is involved)
+# ---------------------------------------------------------------------------
 
-        patches = self.patches[key]
-        if is_quantized(weight):
-            out_weight = weight.to(device_to)
-            patches = move_patch_to_device(patches, self.load_device if self.patch_on_device else self.offload_device)
-            # TODO: do we ever have legitimate duplicate patches? (i.e. patch on top of patched weight)
-            out_weight.patches = [(patches, key)]
+def _filename_list():
+    """All text-encoder files the GGUF CLIP loaders may offer."""
+    files = []
+    files += folder_paths.get_filename_list("clip")
+    files += folder_paths.get_filename_list("clip_gguf")
+    return sorted(files)
+
+
+def _vision_filename_list():
+    """The mmproj / vision-tower GGUF files among :func:`_filename_list`."""
+    return sorted(f for f in _filename_list()
+                  if "mmproj" in f.lower() or "vision" in f.lower())
+
+
+def _load_clip_state_dicts(ckpt_paths, vision_path=None):
+    """Read each path into a state dict, merging the mmproj vision tower.
+
+    ``vision_path`` only applies when a single GGUF is being loaded -- a vision
+    tower belongs to one text encoder, so it is ignored for the multi-encoder
+    loaders.
+
+    Non-GGUF files are read with ``load_torch_file``; mixing scaled FP8 with
+    GGUF is rejected because only one set of custom ops can be active.
+    """
+    clip_data = []
+    for p in ckpt_paths:
+        if p.endswith(".gguf"):
+            sd = gguf_clip_loader(p, vision_path=(vision_path if len(ckpt_paths) == 1 else None))
         else:
-            inplace_update = self.weight_inplace_update or inplace_update
-            if key not in self.backup:
-                self.backup[key] = collections.namedtuple('Dimension', ['weight', 'inplace_update'])(
-                    weight.to(device=self.offload_device, copy=inplace_update), inplace_update
-                )
-
-            if device_to is not None:
-                temp_weight = comfy.model_management.cast_to_device(weight, device_to, torch.float32, copy=True)
-            else:
-                temp_weight = weight.to(torch.float32, copy=True)
-
-            out_weight = comfy.lora.calculate_weight(patches, temp_weight, key)
-            out_weight = comfy.float.stochastic_rounding(out_weight, weight.dtype)
-
-        if inplace_update:
-            comfy.utils.copy_to_param(self.model, key, out_weight)
-        else:
-            comfy.utils.set_attr_param(self.model, key, out_weight)
-
-    def unpatch_model(self, device_to=None, unpatch_weights=True):
-        if unpatch_weights:
-            for p in self.model.parameters():
-                if is_torch_compatible(p):
-                    continue
-                patches = getattr(p, "patches", [])
-                if len(patches) > 0:
-                    p.patches = []
-        # TODO: Find another way to not unload after patches
-        return super().unpatch_model(device_to=device_to, unpatch_weights=unpatch_weights)
+            sd = comfy.utils.load_torch_file(p, safe_load=True)
+            if "scaled_fp8" in sd: # NOTE: Scaled FP8 would require different custom ops, but only one can be active
+                raise NotImplementedError(f"Mixing scaled FP8 with GGUF is not supported! Use regular CLIP loader or switch model(s)\n({p})")
+        clip_data.append(sd)
+    return clip_data
 
 
-    def pin_weight_to_device(self, key):
-        op_key = key.rsplit('.', 1)[0]
-        if not self.mmap_released and op_key in self.named_modules_to_munmap:
-            # TODO: possible to OOM, find better way to detach
-            self.named_modules_to_munmap[op_key].to(self.load_device).to(self.offload_device)
-            del self.named_modules_to_munmap[op_key]
-        super().pin_weight_to_device(key)
+def _load_text_encoder(clip_paths, clip_type, clip_data):
+    """Build the text-encoder ``CLIP`` for already-loaded state dicts."""
+    clip = comfy.sd.load_text_encoder_state_dicts(
+        clip_type = clip_type,
+        state_dicts = clip_data,
+        model_options = {
+            "custom_operations": GGMLOps,
+            "initial_device": comfy.model_management.text_encoder_offload_device()
+        },
+        embedding_directory = folder_paths.get_folder_paths("embeddings"),
+    )
+    clip.patcher = GGUFModelPatcher.clone(clip.patcher)
+    return clip
 
-    mmap_released = False
-    named_modules_to_munmap = {}
 
-    def load(self, *args, force_patch_weights=False, **kwargs):
-        if not self.mmap_released:
-            self.named_modules_to_munmap = dict(self.model.named_modules())
+def _clip_type(name):
+    """Map a ``type`` widget value onto ``comfy.sd.CLIPType``."""
+    return getattr(comfy.sd.CLIPType, name.upper(), comfy.sd.CLIPType.STABLE_DIFFUSION)
 
-        # always call `patch_weight_to_device` even for lowvram
-        super().load(*args, force_patch_weights=True, **kwargs)
-
-        # make sure nothing stays linked to mmap after first load
-        if not self.mmap_released:
-            linked = []
-            if kwargs.get("lowvram_model_memory", 0) > 0:
-                for n, m in self.named_modules_to_munmap.items():
-                    if hasattr(m, "weight"):
-                        device = getattr(m.weight, "device", None)
-                        if device == self.offload_device:
-                            linked.append((n, m))
-                            continue
-                    if hasattr(m, "bias"):
-                        device = getattr(m.bias, "device", None)
-                        if device == self.offload_device:
-                            linked.append((n, m))
-                            continue
-            if linked and self.load_device != self.offload_device:
-                logging.info(f"Attempting to release mmap ({len(linked)})")
-                for n, m in linked:
-                    # TODO: possible to OOM, find better way to detach
-                    m.to(self.load_device).to(self.offload_device)
-            self.mmap_released = True
-            self.named_modules_to_munmap = {}
-
-    def clone(self, *args, **kwargs):
-        src_cls = self.__class__
-        self.__class__ = GGUFModelPatcher
-        n = super().clone(*args, **kwargs)
-        n.__class__ = GGUFModelPatcher
-        self.__class__ = src_cls
-        # GGUF specific clone values below
-        n.patch_on_device = getattr(self, "patch_on_device", False)
-        n.mmap_released = getattr(self, "mmap_released", False)
-        if src_cls != GGUFModelPatcher:
-            n.size = 0 # force recalc
-        return n
 
 class UnetLoaderGGUF:
     @classmethod
@@ -220,54 +197,22 @@ class CLIPLoaderGGUF:
 
     @classmethod
     def get_filename_list(s):
-        files = []
-        files += folder_paths.get_filename_list("clip")
-        files += folder_paths.get_filename_list("clip_gguf")
-        return sorted(files)
+        return _filename_list()
 
     @classmethod
     def get_vision_filename_list(s):
         "mmproj / vision-tower GGUF files that can be merged into a text encoder"
-        files = []
-        files += folder_paths.get_filename_list("clip")
-        files += folder_paths.get_filename_list("clip_gguf")
-        return sorted(f for f in files
-                      if "mmproj" in f.lower() or "vision" in f.lower())
-
-    def load_data(self, ckpt_paths, vision_path=None):
-        clip_data = []
-        for p in ckpt_paths:
-            if p.endswith(".gguf"):
-                sd = gguf_clip_loader(p, vision_path=(vision_path if len(ckpt_paths) == 1 else None))
-            else:
-                sd = comfy.utils.load_torch_file(p, safe_load=True)
-                if "scaled_fp8" in sd: # NOTE: Scaled FP8 would require different custom ops, but only one can be active
-                    raise NotImplementedError(f"Mixing scaled FP8 with GGUF is not supported! Use regular CLIP loader or switch model(s)\n({p})")
-            clip_data.append(sd)
-        return clip_data
-
-    def load_patcher(self, clip_paths, clip_type, clip_data):
-        clip = comfy.sd.load_text_encoder_state_dicts(
-            clip_type = clip_type,
-            state_dicts = clip_data,
-            model_options = {
-                "custom_operations": GGMLOps,
-                "initial_device": comfy.model_management.text_encoder_offload_device()
-            },
-            embedding_directory = folder_paths.get_folder_paths("embeddings"),
-        )
-        clip.patcher = GGUFModelPatcher.clone(clip.patcher)
-        return clip
+        return _vision_filename_list()
 
     def load_clip(self, clip_name, type="stable_diffusion", vision_name="none"):
         clip_path = folder_paths.get_full_path("clip", clip_name)
-        clip_type = getattr(comfy.sd.CLIPType, type.upper(), comfy.sd.CLIPType.STABLE_DIFFUSION)
+        clip_type = _clip_type(type)
         vision_path = None
         if vision_name not in (None, "", "none"):
             vision_path = (folder_paths.get_full_path("clip", vision_name)
                            or folder_paths.get_full_path("clip_gguf", vision_name))
-        return (self.load_patcher([clip_path], clip_type,
-                                  self.load_data([clip_path], vision_path=vision_path)),)
+        return (_load_text_encoder([clip_path], clip_type,
+                                   _load_clip_state_dicts([clip_path], vision_path=vision_path)),)
 
 class DualCLIPLoaderGGUF(CLIPLoaderGGUF):
     @classmethod
@@ -285,11 +230,10 @@ class DualCLIPLoaderGGUF(CLIPLoaderGGUF):
     TITLE = "DualCLIPLoader (GGUF)"
 
     def load_clip(self, clip_name1, clip_name2, type):
-        clip_path1 = folder_paths.get_full_path("clip", clip_name1)
-        clip_path2 = folder_paths.get_full_path("clip", clip_name2)
-        clip_paths = (clip_path1, clip_path2)
-        clip_type = getattr(comfy.sd.CLIPType, type.upper(), comfy.sd.CLIPType.STABLE_DIFFUSION)
-        return (self.load_patcher(clip_paths, clip_type, self.load_data(clip_paths)),)
+        clip_paths = (folder_paths.get_full_path("clip", clip_name1),
+                      folder_paths.get_full_path("clip", clip_name2))
+        return (_load_text_encoder(clip_paths, _clip_type(type),
+                                   _load_clip_state_dicts(clip_paths)),)
 
 class TripleCLIPLoaderGGUF(CLIPLoaderGGUF):
     @classmethod
@@ -306,12 +250,11 @@ class TripleCLIPLoaderGGUF(CLIPLoaderGGUF):
     TITLE = "TripleCLIPLoader (GGUF)"
 
     def load_clip(self, clip_name1, clip_name2, clip_name3, type="sd3"):
-        clip_path1 = folder_paths.get_full_path("clip", clip_name1)
-        clip_path2 = folder_paths.get_full_path("clip", clip_name2)
-        clip_path3 = folder_paths.get_full_path("clip", clip_name3)
-        clip_paths = (clip_path1, clip_path2, clip_path3)
-        clip_type = getattr(comfy.sd.CLIPType, type.upper(), comfy.sd.CLIPType.STABLE_DIFFUSION)
-        return (self.load_patcher(clip_paths, clip_type, self.load_data(clip_paths)),)
+        clip_paths = (folder_paths.get_full_path("clip", clip_name1),
+                      folder_paths.get_full_path("clip", clip_name2),
+                      folder_paths.get_full_path("clip", clip_name3))
+        return (_load_text_encoder(clip_paths, _clip_type(type),
+                                   _load_clip_state_dicts(clip_paths)),)
 
 class QuadrupleCLIPLoaderGGUF(CLIPLoaderGGUF):
     @classmethod
@@ -329,13 +272,12 @@ class QuadrupleCLIPLoaderGGUF(CLIPLoaderGGUF):
     TITLE = "QuadrupleCLIPLoader (GGUF)"
 
     def load_clip(self, clip_name1, clip_name2, clip_name3, clip_name4, type="stable_diffusion"):
-        clip_path1 = folder_paths.get_full_path("clip", clip_name1)
-        clip_path2 = folder_paths.get_full_path("clip", clip_name2)
-        clip_path3 = folder_paths.get_full_path("clip", clip_name3)
-        clip_path4 = folder_paths.get_full_path("clip", clip_name4)
-        clip_paths = (clip_path1, clip_path2, clip_path3, clip_path4)
-        clip_type = getattr(comfy.sd.CLIPType, type.upper(), comfy.sd.CLIPType.STABLE_DIFFUSION)
-        return (self.load_patcher(clip_paths, clip_type, self.load_data(clip_paths)),)
+        clip_paths = (folder_paths.get_full_path("clip", clip_name1),
+                      folder_paths.get_full_path("clip", clip_name2),
+                      folder_paths.get_full_path("clip", clip_name3),
+                      folder_paths.get_full_path("clip", clip_name4))
+        return (_load_text_encoder(clip_paths, _clip_type(type),
+                                   _load_clip_state_dicts(clip_paths)),)
 
 NODE_CLASS_MAPPINGS = {
     "UnetLoaderGGUF": UnetLoaderGGUF,
@@ -345,4 +287,3 @@ NODE_CLASS_MAPPINGS = {
     "QuadrupleCLIPLoaderGGUF": QuadrupleCLIPLoaderGGUF,
     "UnetLoaderGGUFAdvanced": UnetLoaderGGUFAdvanced,
 }
-

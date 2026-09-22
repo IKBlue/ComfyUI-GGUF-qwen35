@@ -52,9 +52,10 @@ Three things, on top of upstream:
 |---|---|---|
 | `qwen35_support.py` | **new** (IKBlue) | qwen35 text-encoder remap + mmproj vision-tower converter |
 | `nodes_v3.py` | **new** (IKBlue) | all six nodes in the V3 schema |
+| `gguf_patcher.py` | City96 code, **extracted** (IKBlue) | `GGUFModelPatcher` + `*_gguf` folder registration, moved out of `nodes.py` so V1 and V3 share one copy |
 | `__init__.py` | IKBlue | exports `comfy_entrypoint`, falls back to V1 |
 | `loader.py` | City96 | +qwen35 branch, +optional `vision_path` |
-| `nodes.py` | City96 | +optional `vision_name` (V1 classes kept) |
+| `nodes.py` | City96 | loading moved to free functions (shared with V3); +optional `vision_name` |
 | `README.md`, `NOTICE`, `CHANGELOG.md`, `pyproject.toml` | IKBlue | fork metadata |
 
 Everything else (`ops.py`, `dequant.py`, `tools/`) is upstream, unchanged.
@@ -223,9 +224,13 @@ Two ggml layout traps are handled explicitly:
   reference is int8-quantised there, so the packing order could not be derived
   with zero error; guessing would degrade output silently, so it was left alone.
   This does not affect the vision tower.
-- **Verified against the 9B PE-T2I weights only.** `HEAD_PERM` and
-  `CONV_GROUP_ORDER` assume 32 value heads, so 2B/4B (16 value heads) and 27B may
-  need their own validation.
+- **Verified against the 9B PE-T2I weights only — and now enforced.** The
+  channel tables assume 32 value heads, so `convert_qwen35()` checks the GGUF's
+  value-head count and **refuses** a mismatch instead of silently corrupting the
+  weights (the 4B weights have 16). Likewise `vision_from_mmproj()` rejects an
+  mmproj whose vision geometry is not the validated 9B one (hidden 1152, patch
+  16). Both guards raise with an explanatory message; supporting another size
+  means deriving and validating its own tables.
 - **Language-only GGUFs need an mmproj** for any image input, as described above.
 
 ---
@@ -235,12 +240,13 @@ Two ggml layout traps are handled explicitly:
 ```
 ComfyUI-GGUF-qwen35/
 ├── __init__.py            # V3 entry point (+ V1 fallback)
-├── nodes_v3.py            # V3 schema nodes  (IKBlue)
-├── nodes.py               # V1 schema nodes  (upstream + vision_name)
-├── qwen35_support.py      # qwen35 + mmproj conversion  (IKBlue, new)
-├── loader.py              # GGUF readers and key maps   (upstream + qwen35)
-├── ops.py                 # GGML custom operations      (upstream)
-├── dequant.py             # dequantisation kernels      (upstream)
+├── nodes_v3.py            # V3 schema nodes          (IKBlue, new)
+├── nodes.py               # V1 schema nodes + shared loading helpers
+├── gguf_patcher.py        # GGUFModelPatcher + *_gguf folder registration
+├── qwen35_support.py      # qwen35 + mmproj conversion (IKBlue, new)
+├── loader.py              # GGUF readers and key maps  (upstream + qwen35)
+├── ops.py                 # GGML custom operations     (upstream)
+├── dequant.py             # dequantisation kernels     (upstream)
 ├── tools/                 # conversion / quantisation helpers (upstream)
 ├── NOTICE                 # attribution
 ├── CHANGELOG.md           # fork changes
@@ -251,6 +257,23 @@ ComfyUI-GGUF-qwen35/
 Files must stay in this flat layout: `loader.py` consumes `qwen35_support.py` via
 a relative import and `ops.py` imports `comfy.ops`, so moving them breaks the
 pack.
+
+### Why the loading logic is in free functions
+
+A method cannot be shared between the two schemas, because V1 binds `self` while
+V3 binds `cls`. So the shared work lives at module level in `nodes.py` and both
+schemas call it directly:
+
+| Helper | Purpose |
+|---|---|
+| `_filename_list()` / `_vision_filename_list()` | the CLIP file lists |
+| `_load_clip_state_dicts(paths, vision_path)` | read each path; merge the mmproj tower |
+| `_load_text_encoder(paths, clip_type, clip_data)` | build the `CLIP` with the GGML ops |
+| `_clip_type(name)` | map a `type` widget value onto `comfy.sd.CLIPType` |
+
+`GGUFModelPatcher` and the `*_gguf` folder registration live in
+`gguf_patcher.py` for the same reason — that file also performs the registration
+at import, so the folder keys exist no matter which schema path loads.
 
 ## Development
 

@@ -53,6 +53,13 @@ changed. The complete list of modifications follows.
       GGUFCustomNodesExtension and comfy_entrypoint(). Derived from the
       corresponding V1 classes in upstream nodes.py.
 
+  gguf_patcher.py  (NEW FILE, upstream City96 code relocated by IKBlue)
+      GGUFModelPatcher and update_folder_names_and_paths, moved verbatim out of
+      nodes.py so the V1 and V3 node modules share one definition instead of
+      keeping two copies. The *_gguf folder registration is performed here at
+      import, so it happens on either schema path. Neither definition was
+      altered.
+
   loader.py  (MODIFIED, upstream City96)
       + "qwen35" added to TXT_ARCH_LIST
       + an early qwen35 branch in gguf_clip_loader()
@@ -61,8 +68,14 @@ changed. The complete list of modifications follows.
         text encoder
 
   nodes.py  (MODIFIED, upstream City96)
-      + an optional "vision_name" input on CLIPLoaderGGUF, with
-        get_vision_filename_list() to discover mmproj/vision GGUFs
+      + the CLIP state-dict loader and text-encoder builder are now module-level
+        free functions (_load_clip_state_dicts, _load_text_encoder, _clip_type,
+        _filename_list, _vision_filename_list) so the V1 classes and the V3
+        classes in nodes_v3.py can share them; a method cannot be shared because
+        V1 binds `self` and V3 binds `cls`
+      + GGUFModelPatcher and update_folder_names_and_paths moved to
+        gguf_patcher.py
+      + an optional "vision_name" input on CLIPLoaderGGUF
       + node category changed from "bootleg" to "IKBlue"
       + a message typo fix ("Mixig" -> "Mixing")
       The V1 node classes remain available for ComfyUI builds without

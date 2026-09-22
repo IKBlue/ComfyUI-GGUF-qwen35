@@ -54,14 +54,20 @@ import torch
 #: 32 value heads "evens then odds"; one single permutation is correct for every
 #: linear-attention layer. Verified exact (0 error) on the F32 tensors of all 24
 #: linear-attention layers.
-HEAD_PERM = list(range(0, 32, 2)) + list(range(1, 32, 2))
+#:
+#: Only correct for models with this many value heads (the 9B PE-T2I weights);
+#: :func:`convert_qwen35` verifies the count and raises otherwise.
+_HEAD_PERM = list(range(0, 32, 2)) + list(range(1, 32, 2))
+
+#: Number of value heads :data:`_HEAD_PERM` was derived for.
+_HEAD_PERM_NUM_VALUE_HEADS = len(_HEAD_PERM)
 
 #: Channel-group order for ``ssm_conv1d`` (8192 channels = 64 groups of 128).
 #: Groups 0..32 stay, then the even groups 34,36,..,62, then the odd 33,35,..,63.
-CONV_GROUP_ORDER = (list(range(0, 33))
-                    + list(range(34, 63, 2))
-                    + list(range(33, 64, 2)))
-assert len(CONV_GROUP_ORDER) == 64
+_CONV_GROUP_ORDER = (list(range(0, 33))
+                     + list(range(34, 63, 2))
+                     + list(range(33, 64, 2)))
+assert len(_CONV_GROUP_ORDER) == 64
 
 #: RMSNorm weights in the GGUF are stored un-centred. ComfyUI's ``RMSNorm`` uses
 #: ``add=1``, so these need ``- 1.0``.
@@ -113,6 +119,32 @@ FULL_SUFFIX = {
 }
 
 
+def _check_head_count(sd):
+    """Fail loudly when the checkpoint does not match the channel tables.
+
+    :data:`_HEAD_PERM` and :data:`_CONV_GROUP_ORDER` were derived for a specific
+    number of value heads. On a differently sized qwen35 model (16 value heads
+    on the 4B weights, for example) applying them anyway would silently produce
+    wrong weights with no error at load time, which is far worse than refusing.
+
+    Raises:
+        ValueError: if the value-head count in the GGUF differs from the count
+            the permutation tables assume.
+    """
+    ref = "blk.0.ssm_dt.bias"
+    if ref not in sd:
+        return
+    got = int(sd[ref].shape[-1])
+    if got != _HEAD_PERM_NUM_VALUE_HEADS:
+        raise ValueError(
+            "ComfyUI-GGUF/qwen35: this GGUF has %d value heads but the channel "
+            "permutation tables were derived for %d (Qwen-Image-2.1 PE-T2I, 9B). "
+            "Applying them to another size would silently corrupt the weights, "
+            "so the load is refused. A %d-head model needs its own HEAD_PERM / "
+            "CONV_GROUP_ORDER validation."
+            % (got, _HEAD_PERM_NUM_VALUE_HEADS, got))
+
+
 def convert_qwen35(sd, is_quantized, dequantize_tensor):
     """Remap a raw qwen35 GGUF state dict to ComfyUI's qwen35 checkpoint layout.
 
@@ -121,9 +153,13 @@ def convert_qwen35(sd, is_quantized, dequantize_tensor):
     * key renaming from llama.cpp names to ComfyUI's qwen35 module names;
     * ``- 1.0`` on the RMSNorm weights (the GGUF stores them un-centred);
     * ``A_log = log(-A)`` for ``ssm_a``;
-    * the :data:`HEAD_PERM` channel permutation on ``dt_bias``,
+    * the :data:`_HEAD_PERM` channel permutation on ``dt_bias``,
       ``ssm_alpha.weight`` and ``ssm_beta.weight``;
-    * the :data:`CONV_GROUP_ORDER` group reorder on ``ssm_conv1d.weight``.
+    * the :data:`_CONV_GROUP_ORDER` group reorder on ``ssm_conv1d.weight``.
+
+    The value-head count is validated first: the channel tables were derived for
+    a specific model size, and applying them to another would corrupt the weights
+    without raising anything, so a mismatch is refused outright.
 
     Every tensor is dequantised before being returned. That is required, not
     cosmetic: a ``GGMLTensor`` reports its dequantised shape while keeping
@@ -148,9 +184,11 @@ def convert_qwen35(sd, is_quantized, dequantize_tensor):
     def plain(t):
         return dequantize_tensor(t) if is_quantized(t) else t
 
+    _check_head_count(sd)
+
     out = {}
-    P = torch.tensor(HEAD_PERM)
-    conv_idx = torch.tensor(CONV_GROUP_ORDER)
+    P = torch.tensor(_HEAD_PERM)
+    conv_idx = torch.tensor(_CONV_GROUP_ORDER)
 
     for k, v in sd.items():
         if k == "token_embd.weight":
@@ -217,7 +255,7 @@ _VISION_TAIL = {
 }
 
 
-def _logical(tensor):
+def _ggml_tensor_to_torch(tensor):
     """Return a ggml reader tensor as a torch tensor in logical axis order.
 
     ggml files store ``tensor.shape`` as the logical shape while ``tensor.data``
@@ -289,13 +327,36 @@ def vision_from_mmproj(path, reader=None):
     out = {}
 
     def g(name):
-        return _logical(by_name[name])
+        return _ggml_tensor_to_torch(by_name[name])
+
+    # Geometry comes from the file's own metadata rather than being assumed, so
+    # a mismatched mmproj is rejected instead of silently mistransposed.
+    def meta_int(key):
+        f = reader.get_field(key)
+        if f is None:
+            return None
+        v = f.parts[f.data[-1]]
+        return int(v.item() if hasattr(v, "item") else v)
+
+    hidden = meta_int("clip.vision.embedding_length")
+    patch = meta_int("clip.vision.patch_size")
+    temporal = 2                                     # fixed by the Qwen3.5 patchifier
+    # in_channels is not a metadata field; the Qwen3.5 vision patchifier is RGB.
+    want = {"hidden": 1152, "in_channels": 3, "temporal": temporal, "patch": 16}
+    got = {"hidden": hidden, "in_channels": 3, "temporal": temporal, "patch": patch}
+    if hidden != want["hidden"] or patch != want["patch"]:
+        raise ValueError(
+            "ComfyUI-GGUF/qwen35: unsupported mmproj geometry (%s). This "
+            "converter was validated for %s (Qwen3.5-9B vision tower); the "
+            "patch-embed reshape assumes those dimensions." % (got, want))
 
     # patch embed: ggml keeps the two temporal slices as separate tensors
     w0, w1 = g("v.patch_embd.weight"), g("v.patch_embd.weight.1")
-    merged = torch.stack([w0, w1], dim=0)                      # (2,16,16,3,1152)
+    merged = torch.stack([w0, w1], dim=0)                      # (temporal,patch,patch,ch,h)
     out["model.visual.patch_embed.proj.weight"] = (
-        merged.permute(4, 3, 0, 1, 2).reshape(1152, 3, 2, 16, 16).contiguous())
+        merged.permute(4, 3, 0, 1, 2).reshape(
+            want["hidden"], want["in_channels"], want["temporal"],
+            want["patch"], want["patch"]).contiguous())
     out["model.visual.patch_embed.proj.bias"] = g("v.patch_embd.bias")
     out["model.visual.pos_embed.weight"] = g("v.position_embd.weight").t().contiguous()
     out["model.visual.merger.norm.weight"] = g("v.post_ln.weight")
@@ -313,7 +374,7 @@ def vision_from_mmproj(path, reader=None):
         if tail not in _VISION_TAIL:
             raise KeyError("ComfyUI-GGUF/qwen35: unmapped mmproj key: %s" % t.name)
         dest, transpose = _VISION_TAIL[tail]
-        v = _logical(t)
+        v = _ggml_tensor_to_torch(t)
         if transpose:
             v = v.t().contiguous()
         out["model.visual.blocks.%d.%s" % (layer, dest)] = v
