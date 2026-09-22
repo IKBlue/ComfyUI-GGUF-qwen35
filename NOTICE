@@ -1,0 +1,24 @@
+ComfyUI-GGUF-qwen35
+Copyright 2026 IKBlue
+
+This product includes software developed by City96
+(https://github.com/city96/ComfyUI-GGUF), licensed under the Apache
+License, Version 2.0.
+
+The upstream project provides the GGUF reader integration, the GGML custom
+operations, the dequantisation kernels and all non-qwen35 model support.
+
+Changes made in this fork (2026, IKBlue):
+
+  * qwen35_support.py (new file)
+      Remaps a raw Qwen3.5 ("qwen35") GGUF text encoder onto ComfyUI's native
+      qwen35 checkpoint layout: key renaming, the RMSNorm +1 centring offset,
+      the ssm_a -> A_log log transform, the value-head channel permutation and
+      the conv1d channel-group order.  Tensors are dequantised on return so
+      that load_state_dict sees real storage shapes.
+
+  * loader.py (modified)
+      "qwen35" added to TXT_ARCH_LIST, and one early branch added to
+      gguf_clip_loader() that delegates to qwen35_support.convert_qwen35().
+
+No other files were modified.  See README.md for verification details.
