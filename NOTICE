@@ -16,9 +16,17 @@ Changes made in this fork (2026, IKBlue):
       the ssm_a -> A_log log transform, the value-head channel permutation and
       the conv1d channel-group order.  Tensors are dequantised on return so
       that load_state_dict sees real storage shapes.
+      Also provides vision_from_mmproj(), which converts a Qwen3.5 mmproj GGUF
+      (llama.cpp vision tower) into ComfyUI's model.visual.* layout, for text
+      encoder GGUFs that were exported language-only.
 
   * loader.py (modified)
-      "qwen35" added to TXT_ARCH_LIST, and one early branch added to
-      gguf_clip_loader() that delegates to qwen35_support.convert_qwen35().
+      "qwen35" added to TXT_ARCH_LIST; an early qwen35 branch added to
+      gguf_clip_loader() delegating to qwen35_support, with an optional
+      vision_path argument that merges the mmproj vision tower.
+
+  * nodes.py (modified)
+      CLIPLoaderGGUF gains an optional "vision_name" widget so a matching
+      mmproj GGUF can be selected alongside the text encoder.
 
 No other files were modified.  See README.md for verification details.

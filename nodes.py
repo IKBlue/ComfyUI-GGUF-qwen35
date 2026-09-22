@@ -205,7 +205,12 @@ class CLIPLoaderGGUF:
             "required": {
                 "clip_name": (s.get_filename_list(),),
                 "type": base["required"]["type"],
-            }
+            },
+            "optional": {
+                # Qwen3.5 only: supply the matching mmproj GGUF when the text
+                # encoder GGUF was exported language-only (no vision tower).
+                "vision_name": (["none"] + s.get_vision_filename_list(),),
+            },
         }
 
     RETURN_TYPES = ("CLIP",)
@@ -220,11 +225,20 @@ class CLIPLoaderGGUF:
         files += folder_paths.get_filename_list("clip_gguf")
         return sorted(files)
 
-    def load_data(self, ckpt_paths):
+    @classmethod
+    def get_vision_filename_list(s):
+        "mmproj / vision-tower GGUF files that can be merged into a text encoder"
+        files = []
+        files += folder_paths.get_filename_list("clip")
+        files += folder_paths.get_filename_list("clip_gguf")
+        return sorted(f for f in files
+                      if "mmproj" in f.lower() or "vision" in f.lower())
+
+    def load_data(self, ckpt_paths, vision_path=None):
         clip_data = []
         for p in ckpt_paths:
             if p.endswith(".gguf"):
-                sd = gguf_clip_loader(p)
+                sd = gguf_clip_loader(p, vision_path=(vision_path if len(ckpt_paths) == 1 else None))
             else:
                 sd = comfy.utils.load_torch_file(p, safe_load=True)
                 if "scaled_fp8" in sd: # NOTE: Scaled FP8 would require different custom ops, but only one can be active
@@ -245,10 +259,15 @@ class CLIPLoaderGGUF:
         clip.patcher = GGUFModelPatcher.clone(clip.patcher)
         return clip
 
-    def load_clip(self, clip_name, type="stable_diffusion"):
+    def load_clip(self, clip_name, type="stable_diffusion", vision_name="none"):
         clip_path = folder_paths.get_full_path("clip", clip_name)
         clip_type = getattr(comfy.sd.CLIPType, type.upper(), comfy.sd.CLIPType.STABLE_DIFFUSION)
-        return (self.load_patcher([clip_path], clip_type, self.load_data([clip_path])),)
+        vision_path = None
+        if vision_name not in (None, "", "none"):
+            vision_path = (folder_paths.get_full_path("clip", vision_name)
+                           or folder_paths.get_full_path("clip_gguf", vision_name))
+        return (self.load_patcher([clip_path], clip_type,
+                                  self.load_data([clip_path], vision_path=vision_path)),)
 
 class DualCLIPLoaderGGUF(CLIPLoaderGGUF):
     @classmethod

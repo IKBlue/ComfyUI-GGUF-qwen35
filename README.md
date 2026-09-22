@@ -21,12 +21,13 @@ qwen35 checkpoint. This fork adds the missing conversion.
 
 ## Changes vs upstream
 
-Only two files differ:
+Three files differ:
 
 | File | Change |
 |---|---|
-| `qwen35_support.py` | **new** — remaps the llama.cpp qwen35 layout onto ComfyUI's qwen35 checkpoint layout |
-| `loader.py` | 6 lines — `"qwen35"` added to `TXT_ARCH_LIST`, plus one branch in `gguf_clip_loader()` |
+| `qwen35_support.py` | **new** — remaps the llama.cpp qwen35 layout onto ComfyUI's qwen35 checkpoint layout, plus an mmproj vision-tower converter |
+| `loader.py` | ~18 lines — `"qwen35"` added to `TXT_ARCH_LIST`, a qwen35 branch in `gguf_clip_loader()`, and an optional `vision_path` argument |
+| `nodes.py` | ~25 lines — optional `vision_name` input on `CLIPLoader (GGUF)` |
 
 The conversion performs five things:
 
@@ -45,6 +46,56 @@ The conversion performs five things:
 Tensors are dequantised before being returned. This matters: a `GGMLTensor`
 reports the dequantised shape while keeping quantised storage, so
 `load_state_dict` would otherwise read the wrong inner dimension.
+
+## Vision tower (image inputs)
+
+Many qwen35 text-encoder GGUFs — including the Qwen-Image-2.1 **PE-T2I**
+prompt enhancers — are exported **language-only**. They contain no
+`model.visual.*` tensors at all, while ComfyUI's `Qwen35` unconditionally builds
+a vision tower and calls it whenever the input contains an image
+(`comfy/text_encoders/qwen35.py:727` and `:734`). Such a file therefore loads
+fine but fails on any image-edit workflow with:
+
+```
+RuntimeError: mat1 and mat2 shapes cannot be multiplied (3520x1152 and 3456x1152)
+```
+
+(1152 is the *vision* tower width — the language tower of the 9B model is 4096.)
+
+The missing weights are available as the matching **mmproj** GGUF from
+llama.cpp (`type = mmproj`, `clip.has_vision_encoder = true`), for example
+[`lmstudio-community/Qwen3.5-9B-GGUF/mmproj-Qwen3.5-9B-BF16.gguf`](https://huggingface.co/lmstudio-community/Qwen3.5-9B-GGUF).
+
+Place it where ComfyUI scans for CLIP models and pick it in the node's new
+**`vision_name`** widget:
+
+```
+CLIPLoader (GGUF)
+  clip_name   : Qwen-Image-2.1-PE-T2I.Q5_K_S.gguf
+  type        : qwen_image
+  vision_name : mmproj-Qwen3.5-9B-BF16.gguf      <- new, optional
+```
+
+`vision_from_mmproj()` maps `v.*` / `mm.*` onto `model.visual.*`:
+
+| mmproj | ComfyUI |
+|---|---|
+| `v.blk.N.ln1` / `ln2` | `model.visual.blocks.N.norm1` / `norm2` |
+| `v.blk.N.attn_qkv` | `model.visual.blocks.N.attn.qkv` |
+| `v.blk.N.attn_out` | `model.visual.blocks.N.attn.proj` |
+| `v.blk.N.ffn_up` / `ffn_down` | `model.visual.blocks.N.mlp.linear_fc1` / `linear_fc2` |
+| `v.patch_embd` + `.1` | `patch_embed.proj` (two temporal slices → Conv3d) |
+| `v.position_embd` | `pos_embed` |
+| `v.post_ln`, `mm.0`, `mm.2` | `merger.norm`, `merger.linear_fc1`, `merger.linear_fc2` |
+
+Layout gotcha: in a ggml file `tensor.shape` is the *logical* shape while
+`tensor.data` has its axes **reversed**, stored in that tensor's own dtype
+(BF16 appears as `uint8` with the last dimension doubled). Linear weights in the
+mmproj are therefore `(in, out)` and need a transpose — unlike the language
+tower, which already stores them as `(out, in)`.
+
+A language GGUF plus a vision mmproj yield the **same tensor count as the
+official checkpoint**: 427 + 333 = **760**, with zero key overlap.
 
 ## Verification
 

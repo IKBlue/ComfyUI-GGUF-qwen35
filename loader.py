@@ -470,14 +470,31 @@ def gguf_gemma3_tokenizer_loader(path):
     del reader
     return torch.ByteTensor(list(spm.SerializeToString()))
 
-def gguf_clip_loader(path):
+def gguf_clip_loader(path, vision_path=None):
+    """Load a GGUF text encoder.
+
+    ``vision_path`` is an optional Qwen3.5 ``mmproj`` GGUF.  Qwen3.5 text
+    encoder GGUFs are frequently exported language-only, while ComfyUI's
+    Qwen35 always builds a vision tower and calls it for image inputs, so
+    without it any image-edit workflow fails.  The mmproj supplies exactly
+    those missing ``model.visual.*`` tensors.
+    """
     sd, extra = gguf_sd_loader(path, is_text_model=True)
     arch = extra.get("arch_str", None)
     if arch == "qwen35":
         # Qwen3.5 packs its text encoder in llama.cpp naming with a reordered
         # SSM layout; remap it to ComfyUI's qwen35 checkpoint layout.
-        from .qwen35_support import convert_qwen35
-        return convert_qwen35(sd, is_quantized, dequantize_tensor)
+        from .qwen35_support import convert_qwen35, vision_from_mmproj
+        sd = convert_qwen35(sd, is_quantized, dequantize_tensor)
+        if vision_path is not None:
+            vision = vision_from_mmproj(vision_path)
+            clash = set(sd) & set(vision)
+            if clash:
+                raise ValueError(
+                    "ComfyUI-GGUF/qwen35: vision file overlaps the text encoder "
+                    "on %d keys: %s" % (len(clash), sorted(clash)[:3]))
+            sd.update(vision)
+        return sd
     if arch in {"t5", "t5encoder"}:
         temb_key = "token_embd.weight"
         if temb_key in sd and sd[temb_key].shape == (256384, 4096):
