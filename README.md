@@ -44,28 +44,31 @@ Three things, on top of upstream:
    language-only; ComfyUI's `Qwen35` always builds a vision tower and calls it for
    image inputs, so those files break on image-edit workflows. Supply the matching
    `mmproj` GGUF and the fork merges it in.
-3. **V3 node schema.** All six nodes are available via `comfy_api.latest`
-   (`io.ComfyNode` / `io.Schema` / `comfy_entrypoint`), with a V1 fallback for
-   older ComfyUI builds.
+3. **V3 node schema, exclusively.** All six nodes are defined with
+   `comfy_api.latest` (`io.ComfyNode` / `io.Schema` / `comfy_entrypoint`).
+   There is no V1 fallback — see [Requirements](#requirements).
 
 | File | Origin | Change |
 |---|---|---|
 | `qwen35_support.py` | **new** (IKBlue) | qwen35 text-encoder remap + mmproj vision-tower converter |
-| `nodes_v3.py` | **new** (IKBlue) | all six nodes in the V3 schema |
-| `gguf_patcher.py` | City96 code, **extracted** (IKBlue) | `GGUFModelPatcher` + `*_gguf` folder registration, moved out of `nodes.py` so V1 and V3 share one copy |
-| `__init__.py` | IKBlue | exports `comfy_entrypoint`, falls back to V1 |
+| `nodes_v3.py` | **new** (IKBlue) | all six nodes in the V3 schema, plus the shared loading helpers |
+| `gguf_patcher.py` | City96 code, **extracted** (IKBlue) | `GGUFModelPatcher` + `*_gguf` folder registration, moved out of the node module and kept separate |
+| `__init__.py` | IKBlue | exports `comfy_entrypoint`; `NODE_CLASS_MAPPINGS = None` |
 | `loader.py` | City96 | +qwen35 branch, +optional `vision_path` |
-| `nodes.py` | City96 | loading moved to free functions (shared with V3); +optional `vision_name` |
 | `README.md`, `NOTICE`, `CHANGELOG.md`, `pyproject.toml` | IKBlue | fork metadata |
 
+`nodes.py` (the upstream V1 node classes) is **removed** — see the note below.
 Everything else (`ops.py`, `dequant.py`, `tools/`) is upstream, unchanged.
 
 ---
 
 ## Requirements
 
-- A recent ComfyUI. The **V3 schema** needs `comfy_api.latest`; without it the
-  pack automatically falls back to the V1 nodes, so old builds keep working.
+- A ComfyUI build that provides **`comfy_api.latest`** (the V3 schema). This pack
+  is V3-only: there is no V1 fallback, so on an older build ComfyUI reports it as
+  unloadable instead of quietly registering a second, V1 implementation that
+  would have to be maintained in parallel. If you need an older ComfyUI, use
+  [upstream](https://github.com/city96/ComfyUI-GGUF).
 - `gguf>=0.13.0` (plus optional `sentencepiece`, `protobuf` for tokenizer
   recreation) — see `requirements.txt`.
 
@@ -146,6 +149,35 @@ workflows are unaffected. Any `.gguf` whose filename contains `mmproj` or
 
 ---
 
+## V3 schema
+
+All six nodes are defined in `nodes_v3.py` as `io.ComfyNode` subclasses:
+
+```python
+class CLIPLoaderGGUF(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema: ...
+    @classmethod
+    def execute(cls, ...) -> io.NodeOutput: ...
+
+async def comfy_entrypoint() -> ComfyExtension:
+    return GGUFCustomNodesExtension()
+```
+
+`node_id`s and display names match the upstream ids, so existing workflows keep
+resolving. `UnetLoaderGGUFAdvanced` also gains properly typed
+`dequant_dtype` / `patch_dtype` / `patch_on_device` inputs (upstream read those
+as undeclared keyword arguments, so they never appeared in the UI).
+
+> **Registration detail.** ComfyUI's loader checks `NODE_CLASS_MAPPINGS`
+> **first** and returns immediately; the `comfy_entrypoint` branch is an `elif`
+> reached only when that attribute is `None` or absent (`nodes.py`, "V1 node
+> definition" / "V3 Extension Definition"). So `__init__.py` sets
+> `NODE_CLASS_MAPPINGS = None` and exports `comfy_entrypoint`. Setting both would
+> silently keep using the legacy path.
+
+---
+
 ## The qwen35 conversion, step by step
 
 Derived and verified tensor-by-tensor against the official reference weights
@@ -209,7 +241,8 @@ Two ggml layout traps are handled explicitly:
 | Synthetic vision forward pass | OK, returns the 4096-d language width |
 | `comfy.sd.load_text_encoder_state_dicts` | `Qwen35TEModel_` |
 | Real `CLIPLoaderGGUF.execute(..., vision_name=...)` (V3, no stubs) | `NodeOutput` → `Qwen35TEModel_` |
-| V3 migration: entrypoint, all six schemas, id/display-name parity with V1 | pass |
+| V3 migration: entrypoint expands, all six schemas validate, ids and display names unchanged from upstream | pass |
+| Loaded through ComfyUI's own `load_custom_node()` in a scratch `custom_nodes/` dir | `True`, 6 nodes registered |
 
 ## Known limitations
 
@@ -239,9 +272,8 @@ Two ggml layout traps are handled explicitly:
 
 ```
 ComfyUI-GGUF-qwen35/
-├── __init__.py            # V3 entry point (+ V1 fallback)
-├── nodes_v3.py            # V3 schema nodes          (IKBlue, new)
-├── nodes.py               # V1 schema nodes + shared loading helpers
+├── __init__.py            # exports comfy_entrypoint (V3 only)
+├── nodes_v3.py            # the six V3 nodes + shared loading helpers
 ├── gguf_patcher.py        # GGUFModelPatcher + *_gguf folder registration
 ├── qwen35_support.py      # qwen35 + mmproj conversion (IKBlue, new)
 ├── loader.py              # GGUF readers and key maps  (upstream + qwen35)
@@ -260,16 +292,16 @@ pack.
 
 ### Why the loading logic is in free functions
 
-A method cannot be shared between the two schemas, because V1 binds `self` while
-V3 binds `cls`. So the shared work lives at module level in `nodes.py` and both
-schemas call it directly:
+All six nodes need the same loading code, and the three multi-encoder CLIP
+loaders need it with different path counts. Keeping it as plain module-level
+functions in `nodes_v3.py` means each `execute` is a thin wrapper:
 
 | Helper | Purpose |
 |---|---|
 | `_filename_list()` / `_vision_filename_list()` | the CLIP file lists |
+| `_clip_type_options()` / `_clip_type(name)` | the `type` widget list, and mapping a value onto `comfy.sd.CLIPType` |
 | `_load_clip_state_dicts(paths, vision_path)` | read each path; merge the mmproj tower |
 | `_load_text_encoder(paths, clip_type, clip_data)` | build the `CLIP` with the GGML ops |
-| `_clip_type(name)` | map a `type` widget value onto `comfy.sd.CLIPType` |
 
 `GGUFModelPatcher` and the `*_gguf` folder registration live in
 `gguf_patcher.py` for the same reason — that file also performs the registration

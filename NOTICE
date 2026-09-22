@@ -17,11 +17,14 @@ unchanged:
   loader.py               GGUF readers, image/sd.cpp compatibility mode, the
                           T5 / Llama / Gemma3 / Qwen2VL / Qwen3VL key maps,
                           tokenizer reconstruction
-  nodes.py                the original V1 node classes and GGUFModelPatcher
   tools/                  model -> GGUF conversion and llama.cpp quantization
                           helpers (convert.py, lcpp.patch, fix_5d_tensors.py,
                           read_tensors.py, fix_lines_ending.py)
   LICENSE                 Apache License 2.0, reproduced unmodified
+
+  Upstream also provides nodes.py (the V1 node classes and GGUFModelPatcher).
+  This fork is V3-only and does NOT reproduce those classes; the V1 schema is
+  available from upstream itself. See "CHANGES MADE IN THIS FORK" below.
 
 Upstream project: https://github.com/city96/ComfyUI-GGUF
 
@@ -55,10 +58,9 @@ changed. The complete list of modifications follows.
 
   gguf_patcher.py  (NEW FILE, upstream City96 code relocated by IKBlue)
       GGUFModelPatcher and update_folder_names_and_paths, moved verbatim out of
-      nodes.py so the V1 and V3 node modules share one definition instead of
-      keeping two copies. The *_gguf folder registration is performed here at
-      import, so it happens on either schema path. Neither definition was
-      altered.
+      the upstream nodes.py so they stay separate from the node-schema module.
+      The *_gguf folder registration is performed here at import, so it happens
+      regardless of import order. Neither definition was altered.
 
   loader.py  (MODIFIED, upstream City96)
       + "qwen35" added to TXT_ARCH_LIST
@@ -67,19 +69,14 @@ changed. The complete list of modifications follows.
       + a mismatch guard rejecting a vision file that shares keys with the
         text encoder
 
-  nodes.py  (MODIFIED, upstream City96)
-      + the CLIP state-dict loader and text-encoder builder are now module-level
-        free functions (_load_clip_state_dicts, _load_text_encoder, _clip_type,
-        _filename_list, _vision_filename_list) so the V1 classes and the V3
-        classes in nodes_v3.py can share them; a method cannot be shared because
-        V1 binds `self` and V3 binds `cls`
-      + GGUFModelPatcher and update_folder_names_and_paths moved to
-        gguf_patcher.py
-      + an optional "vision_name" input on CLIPLoaderGGUF
-      + node category changed from "bootleg" to "IKBlue"
-      + a message typo fix ("Mixig" -> "Mixing")
-      The V1 node classes remain available for ComfyUI builds without
-      comfy_api.latest.
+  nodes.py  (REMOVED, upstream City96)
+      The upstream V1 node classes were deleted when this fork became V3-only.
+      The shared loading logic they used to carry (the CLIP state-dict reader,
+      the text-encoder builder, the file-list and CLIPType helpers) was carried
+      over into nodes_v3.py as module-level functions; GGUFModelPatcher and the
+      folder registration went to gguf_patcher.py. The V1 classes themselves are
+      not reproduced anywhere. Upstream remains the reference for V1 (and is
+      available from https://github.com/city96/ComfyUI-GGUF).
 
   __init__.py  (MODIFIED)
       Exports comfy_entrypoint when comfy_api.latest is importable, setting

@@ -6,6 +6,9 @@
 
 """ComfyUI V3 (``comfy_api.latest``) definitions for the GGUF loader nodes.
 
+This is the only node module in the pack: there is no V1 fallback, so importing
+this file requires a ComfyUI build that provides ``comfy_api.latest``.
+
 Six nodes, each an :class:`io.ComfyNode` with a ``define_schema`` classmethod and
 a classmethod ``execute`` returning :class:`io.NodeOutput`:
 
@@ -22,25 +25,20 @@ node_id                      output      notes
 ``QuadrupleCLIPLoaderGGUF``  ``CLIP``    four text encoders
 ===========================  ==========  ==========================================
 
-Every ``node_id`` and ``display_name`` matches the corresponding V1 class in
-:mod:`nodes`, so existing workflows keep resolving after the migration.
-
-Import order and registration
------------------------------
+Registration
+------------
 ComfyUI's custom-node loader checks ``NODE_CLASS_MAPPINGS`` **first** and returns
 immediately, so the ``comfy_entrypoint`` branch is only reached when that
 attribute is ``None`` or absent. :mod:`__init__` therefore sets
-``NODE_CLASS_MAPPINGS = None`` when this module imports cleanly, and only falls
-back to the V1 mappings when ``comfy_api.latest`` is unavailable. Exposing both
-would silently keep running V1.
+``NODE_CLASS_MAPPINGS = None``; there is no legacy mapping to fall back to.
 
-The V1 classes stay in :mod:`nodes` (which this module imports for its shared
-helpers and for the core type lists) because custom-node discovery only loads
-top-level entries of ``custom_nodes/`` -- ``nodes.py`` as a submodule is never
-registered on its own, so there is no double registration.
+Shared plumbing that has nothing to do with the node schema (the GGUF model
+patcher and the ``*_gguf`` folder registration) lives in :mod:`gguf_patcher`;
+the qwen35 / mmproj conversion lives in :mod:`qwen35_support`.
 
-Attribution: derived from the V1 node classes in upstream ComfyUI-GGUF by City96
-(https://github.com/city96/ComfyUI-GGUF), Apache-2.0.
+Attribution: the node definitions are derived from the V1 node classes in
+upstream ComfyUI-GGUF by City96 (https://github.com/city96/ComfyUI-GGUF),
+Apache-2.0.
 """
 import torch
 import logging
@@ -55,20 +53,76 @@ import folder_paths
 from comfy_api.latest import ComfyExtension, io
 
 from .ops import GGMLOps
-from .loader import gguf_sd_loader
+from .loader import gguf_sd_loader, gguf_clip_loader
 from .gguf_patcher import GGUFModelPatcher
-from .nodes import (
-    _clip_type,
-    _filename_list,
-    _load_clip_state_dicts,
-    _load_text_encoder,
-    _vision_filename_list,
-)
+
+
+# ---------------------------------------------------------------------------
+# shared loading helpers
+#
+# These are plain functions rather than node methods so that all six nodes (and
+# the dual/triple/quadruple wrappers in particular) can call the same code.
+# ---------------------------------------------------------------------------
+
+def _filename_list():
+    """All text-encoder files the GGUF CLIP loaders may offer."""
+    files = []
+    files += folder_paths.get_filename_list("clip")
+    files += folder_paths.get_filename_list("clip_gguf")
+    return sorted(files)
+
+
+def _vision_filename_list():
+    """The mmproj / vision-tower GGUF files among :func:`_filename_list`."""
+    return sorted(f for f in _filename_list()
+                  if "mmproj" in f.lower() or "vision" in f.lower())
 
 
 def _clip_type_options():
-    """The same list the core CLIPLoader exposes."""
+    """The same ``type`` list the core CLIPLoader exposes."""
     return nodes.CLIPLoader.INPUT_TYPES()["required"]["type"][0]
+
+
+def _clip_type(name):
+    """Map a ``type`` widget value onto ``comfy.sd.CLIPType``."""
+    return getattr(comfy.sd.CLIPType, name.upper(), comfy.sd.CLIPType.STABLE_DIFFUSION)
+
+
+def _load_clip_state_dicts(ckpt_paths, vision_path=None):
+    """Read each path into a state dict, merging the mmproj vision tower.
+
+    ``vision_path`` only applies when a single GGUF is being loaded -- a vision
+    tower belongs to one text encoder, so it is ignored for the multi-encoder
+    loaders.
+
+    Non-GGUF files are read with ``load_torch_file``; mixing scaled FP8 with
+    GGUF is rejected because only one set of custom ops can be active.
+    """
+    clip_data = []
+    for p in ckpt_paths:
+        if p.endswith(".gguf"):
+            sd = gguf_clip_loader(p, vision_path=(vision_path if len(ckpt_paths) == 1 else None))
+        else:
+            sd = comfy.utils.load_torch_file(p, safe_load=True)
+            if "scaled_fp8" in sd: # NOTE: Scaled FP8 would require different custom ops, but only one can be active
+                raise NotImplementedError(f"Mixing scaled FP8 with GGUF is not supported! Use regular CLIP loader or switch model(s)\n({p})")
+        clip_data.append(sd)
+    return clip_data
+
+
+def _load_text_encoder(clip_paths, clip_type, clip_data):
+    """Build the text-encoder ``CLIP`` for already-loaded state dicts."""
+    clip = comfy.sd.load_text_encoder_state_dicts(
+        clip_type = clip_type,
+        state_dicts = clip_data,
+        model_options = {
+            "custom_operations": GGMLOps,
+            "initial_device": comfy.model_management.text_encoder_offload_device()
+        },
+        embedding_directory = folder_paths.get_folder_paths("embeddings"),
+    )
+    clip.patcher = GGUFModelPatcher.clone(clip.patcher)
+    return clip
 
 
 class UnetLoaderGGUF(io.ComfyNode):

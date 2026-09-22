@@ -55,16 +55,21 @@ vision tower, and the V3 node schema.
 
 ### Changed
 
+- **The pack is V3-only; `nodes.py` is removed.** The upstream V1 node classes
+  and the `__init__.py` fallback are gone, so the pack now depends on a ComfyUI
+  build that provides `comfy_api.latest`. Losing the fallback is deliberate: one
+  node implementation instead of two, at the cost of not loading on older
+  ComfyUI. Everything the V1 classes used to hold (the shared loading helpers)
+  moved into `nodes_v3.py`.
 - **Refactor: removed the duplicated GGUF infrastructure.** `GGUFModelPatcher`
   and the `*_gguf` folder registration existed as two verbatim copies (one in
   `nodes.py`, one in `nodes_v3.py`, ~115 lines). They now live in the new
   `gguf_patcher.py`, which also performs the folder registration at import so the
-  keys exist on either schema path.
-- **Refactor: the CLIP loading logic is now module-level free functions** in
-  `nodes.py` (`_load_clip_state_dicts`, `_load_text_encoder`, `_clip_type`,
-  `_filename_list`, `_vision_filename_list`), called by both the V1 classes and
-  the V3 classes. A method could not be shared, because V1 binds `self` and V3
-  binds `cls`.
+  keys exist regardless of import order.
+- **Refactor: the CLIP loading logic is module-level free functions** in
+  `nodes_v3.py` (`_load_clip_state_dicts`, `_load_text_encoder`, `_clip_type`,
+  `_clip_type_options`, `_filename_list`, `_vision_filename_list`), so the
+  dual/triple/quadruple wrappers are thin and share one code path.
 - **Robustness: the qwen35 converters now refuse mismatched models** instead of
   silently producing wrong weights. `convert_qwen35()` validates the value-head
   count against the channel tables (the 9B has 32; the 4B has 16) and
@@ -77,9 +82,7 @@ vision tower, and the V3 node schema.
   merge a vision file that shares any key with the text encoder.
 - `CLIPLoaderGGUF` gained an optional `vision_name` input; it defaults to `none`,
   so text-only workflows are unaffected.
-- `__init__.py` now exposes `comfy_entrypoint` and sets
-  `NODE_CLASS_MAPPINGS = None` on the V3 path, falling back to the V1 mappings
-  when `comfy_api.latest` is unavailable.
+- `__init__.py` sets `NODE_CLASS_MAPPINGS = None` and exports `comfy_entrypoint`.
 - Node category changed from upstream's `bootleg` to **`IKBlue`**.
 - `pyproject.toml` repointed at this fork while keeping upstream credited.
 
