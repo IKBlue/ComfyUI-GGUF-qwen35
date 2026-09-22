@@ -29,6 +29,10 @@ qwen35 checkpoint. This fork adds the missing conversion.
 | `loader.py` | ~18 lines — `"qwen35"` added to `TXT_ARCH_LIST`, a qwen35 branch in `gguf_clip_loader()`, and an optional `vision_path` argument |
 | `nodes.py` | ~25 lines — optional `vision_name` input on `CLIPLoader (GGUF)` (V1 classes kept for old builds) |
 
+The node **category** is `IKBlue` (upstream uses `bootleg`), so this fork's nodes
+are grouped under the author's own menu heading instead of being mixed into the
+upstream category.
+
 ## V3 schema migration
 
 All six nodes (`UnetLoaderGGUF`, `UnetLoaderGGUFAdvanced`, `CLIPLoaderGGUF`,

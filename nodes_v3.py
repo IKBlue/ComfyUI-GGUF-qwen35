@@ -155,7 +155,7 @@ class UnetLoaderGGUF(io.ComfyNode):
         return io.Schema(
             node_id="UnetLoaderGGUF",
             display_name="Unet Loader (GGUF)",
-            category="bootleg",
+            category="IKBlue",
             description="Load a diffusion model in GGUF format.",
             inputs=[
                 io.Combo.Input("unet_name", options=folder_paths.get_filename_list("unet_gguf")),
@@ -207,7 +207,7 @@ class UnetLoaderGGUFAdvanced(io.ComfyNode):
         return io.Schema(
             node_id="UnetLoaderGGUFAdvanced",
             display_name="Unet Loader (GGUF/Advanced)",
-            category="bootleg",
+            category="IKBlue",
             description="Load a diffusion model in GGUF format with dequantisation options.",
             inputs=[
                 io.Combo.Input("unet_name", options=folder_paths.get_filename_list("unet_gguf")),
@@ -251,7 +251,7 @@ class CLIPLoaderGGUF(io.ComfyNode):
         return io.Schema(
             node_id="CLIPLoaderGGUF",
             display_name="CLIPLoader (GGUF)",
-            category="bootleg",
+            category="IKBlue",
             description="Load a text encoder in GGUF format.",
             inputs=[
                 io.Combo.Input("clip_name", options=cls.get_filename_list()),
@@ -314,7 +314,7 @@ class DualCLIPLoaderGGUF(io.ComfyNode):
         return io.Schema(
             node_id="DualCLIPLoaderGGUF",
             display_name="DualCLIPLoader (GGUF)",
-            category="bootleg",
+            category="IKBlue",
             description="Load two text encoders in GGUF format.",
             inputs=[
                 io.Combo.Input("clip_name1", options=file_options),
@@ -340,7 +340,7 @@ class TripleCLIPLoaderGGUF(io.ComfyNode):
         return io.Schema(
             node_id="TripleCLIPLoaderGGUF",
             display_name="TripleCLIPLoader (GGUF)",
-            category="bootleg",
+            category="IKBlue",
             description="Load three text encoders in GGUF format.",
             inputs=[
                 io.Combo.Input("clip_name1", options=file_options),
@@ -367,7 +367,7 @@ class QuadrupleCLIPLoaderGGUF(io.ComfyNode):
         return io.Schema(
             node_id="QuadrupleCLIPLoaderGGUF",
             display_name="QuadrupleCLIPLoader (GGUF)",
-            category="bootleg",
+            category="IKBlue",
             description="Load four text encoders in GGUF format.",
             inputs=[
                 io.Combo.Input("clip_name1", options=file_options),

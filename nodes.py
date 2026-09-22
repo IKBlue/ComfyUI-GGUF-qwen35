@@ -144,7 +144,7 @@ class UnetLoaderGGUF:
 
     RETURN_TYPES = ("MODEL",)
     FUNCTION = "load_unet"
-    CATEGORY = "bootleg"
+    CATEGORY = "IKBlue"
     TITLE = "Unet Loader (GGUF)"
 
     def load_unet(self, unet_name, dequant_dtype=None, patch_dtype=None, patch_on_device=None):
@@ -215,7 +215,7 @@ class CLIPLoaderGGUF:
 
     RETURN_TYPES = ("CLIP",)
     FUNCTION = "load_clip"
-    CATEGORY = "bootleg"
+    CATEGORY = "IKBlue"
     TITLE = "CLIPLoader (GGUF)"
 
     @classmethod
